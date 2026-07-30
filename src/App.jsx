@@ -9,7 +9,7 @@ import {
 /* ============================================================
    MONEY — integer cents everywhere. No floats touch stored data.
    ============================================================ */
-const toC = (v) => {
+export const toC = (v) => {
   if (v === null || v === undefined || v === "") return 0;
   const s = String(v).replace(/[^\d.\-,]/g, "");
   // handle "1,234.56" and "1.234,56"
@@ -19,14 +19,14 @@ const toC = (v) => {
   if (isNaN(n)) return 0;
   return Math.round(n * 100);
 };
-const C = (cents, cur = "R") => {
+export const C = (cents, cur = "R") => {
   const neg = cents < 0;
   const a = Math.abs(cents);
   const whole = Math.floor(a / 100).toLocaleString("en-US");
   const dec = String(a % 100).padStart(2, "0");
   return `${neg ? "\u2212" : ""}${cur}${whole}.${dec}`;
 };
-const C0 = (cents, cur = "R") => {
+export const C0 = (cents, cur = "R") => {
   const neg = cents < 0;
   return `${neg ? "\u2212" : ""}${cur}${Math.round(Math.abs(cents) / 100).toLocaleString("en-US")}`;
 };
@@ -43,7 +43,7 @@ const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov
 const ymLabel = (ym) => `${MONTHS[+ym.slice(5) - 1]} ${ym.slice(0, 4)}`;
 const ymShort = (ym) => `${MONTHS[+ym.slice(5) - 1]} ’${ym.slice(2, 4)}`;
 
-const parseDateAny = (raw, dayFirst = true) => {
+export const parseDateAny = (raw, dayFirst = true) => {
   if (raw === null || raw === undefined) return null;
   if (typeof raw === "number") {
     // Excel serial
@@ -213,13 +213,13 @@ const initialState = {
 /* ============================================================
    ENGINES — pure functions over the data model
    ============================================================ */
-const isFlow = (t, cats) => {
+export const isFlow = (t, cats) => {
   if (t.excluded || t.transfer) return false;
   const c = cats.find((x) => x.id === t.categoryId);
   return !c || c.kind !== "transfer";
 };
 
-const accountBalance = (acc, txns, snapshots, uptoDate) => {
+export const accountBalance = (acc, txns, snapshots, uptoDate) => {
   if (acc.type === "investment" || acc.type === "crypto") {
     const snaps = snapshots.filter((s) => s.accountId === acc.id && (!uptoDate || s.date <= uptoDate)).sort((a, b) => a.date.localeCompare(b.date));
     if (snaps.length) return snaps[snaps.length - 1].balanceC;
@@ -229,7 +229,7 @@ const accountBalance = (acc, txns, snapshots, uptoDate) => {
   return acc.openingC + sum;
 };
 
-const monthlyPayment = (balanceC, ratePct, termMonths) => {
+export const monthlyPayment = (balanceC, ratePct, termMonths) => {
   const r = ratePct / 100 / 12;
   if (termMonths <= 0) return 0;
   if (r === 0) return Math.round(balanceC / termMonths);
@@ -237,7 +237,7 @@ const monthlyPayment = (balanceC, ratePct, termMonths) => {
   return Math.round((balanceC * r * f) / (f - 1));
 };
 
-const amortise = (mortgage, months, rateOverridePct) => {
+export const amortise = (mortgage, months, rateOverridePct) => {
   const rows = [];
   let bal = mortgage.balanceC;
   const rate = rateOverridePct ?? mortgage.ratePct;
@@ -254,7 +254,7 @@ const amortise = (mortgage, months, rateOverridePct) => {
 };
 
 /* recurring / annual matching against actuals for a given month */
-const matchRecurring = (item, txns, ym, cats) => {
+export const matchRecurring = (item, txns, ym, cats) => {
   const hits = txns.filter((t) => !t.excluded && t.categoryId === item.categoryId && t.date.slice(0, 7) === ym);
   const actualC = hits.reduce((s, t) => s + t.amountC, 0);
   const paid = hits.length > 0;
@@ -262,7 +262,7 @@ const matchRecurring = (item, txns, ym, cats) => {
   const material = paid && Math.abs(varianceC) > Math.max(Math.abs(item.amountC) * 0.1, 10000);
   return { hits, actualC, paid, varianceC, material };
 };
-const matchAnnual = (item, txns, year) => {
+export const matchAnnual = (item, txns, year) => {
   const ym = `${year}-${String(item.month).padStart(2, "0")}`;
   const hits = txns.filter((t) => !t.excluded && t.categoryId === item.categoryId && t.date.slice(0, 7) === ym);
   const actualC = hits.reduce((s, t) => s + t.amountC, 0);
@@ -270,7 +270,7 @@ const matchAnnual = (item, txns, year) => {
 };
 
 /* 12-month forecast. Actuals replace plan for elapsed months. */
-const buildForecast = (state, scenario) => {
+export const buildForecast = (state, scenario) => {
   const { recurring, annual, txns, categories, comp, mortgage } = state;
   const sc = scenario || { salaryPct: 0, spendPct: 0, inflationDelta: 0, rateDelta: 0, returnDelta: 0 };
   const startYm = nowYm();
@@ -347,7 +347,7 @@ const buildForecast = (state, scenario) => {
 };
 
 /* Long-term annual projection to planning age */
-const buildLongTerm = (state, scenario) => {
+export const buildLongTerm = (state, scenario) => {
   const { settings: st, comp, mortgage, recurring, annual, accounts, txns, snapshots, categories } = state;
   const sc = scenario || { salaryPct: 0, spendPct: 0, inflationDelta: 0, rateDelta: 0, returnDelta: 0 };
   const infl = (st.inflationPct + sc.inflationDelta) / 100;
@@ -436,7 +436,7 @@ const downloadCSV = (filename, headers, rows) => {
 };
 
 /* ---- OFX/QFX parsing ---- */
-const parseOFX = (text) => {
+export const parseOFX = (text) => {
   const out = [];
   const blocks = text.split(/<STMTTRN>/i).slice(1);
   blocks.forEach((b) => {
