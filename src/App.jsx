@@ -5,28 +5,38 @@ import {
   ResponsiveContainer, ComposedChart, AreaChart, Area, LineChart, Line, BarChart, Bar,
   XAxis, YAxis, Tooltip, CartesianGrid, ReferenceLine, Legend, Cell,
 } from "recharts";
+import { THEME_CSS, CHART, readStoredTheme, storeTheme, applyTheme } from "./theme.js";
 
 /* ============================================================
    MONEY — integer cents everywhere. No floats touch stored data.
    ============================================================ */
-const toC = (v) => {
+export const toC = (v) => {
   if (v === null || v === undefined || v === "") return 0;
-  const s = String(v).replace(/[^\d.\-,]/g, "");
+  const raw = String(v).trim();
+  // accounting exports write a negative as "(45.00)" or "R(45.00)" — read the
+  // parentheses off the raw value, before the strip below removes them.
+  // Parens force the sign negative, they do not flip it, so "(-45.00)" stays -45.00.
+  const paren = /^[^\d]*\([^)]*\d[^)]*\)[^\d]*$/.test(raw);
+  const s = raw.replace(/[^\d.\-,]/g, "");
   // handle "1,234.56" and "1.234,56"
   let n;
   if (/,\d{1,2}$/.test(s)) n = parseFloat(s.replace(/\./g, "").replace(",", "."));
+  // dot-grouped thousands, e.g. "1.234" and "12.345.678": a non-zero leading
+  // group of 1-3 digits followed by groups of exactly three digits.
+  else if (/^-?[1-9]\d{0,2}(\.\d{3})+$/.test(s)) n = parseFloat(s.replace(/\./g, ""));
   else n = parseFloat(s.replace(/,/g, ""));
   if (isNaN(n)) return 0;
-  return Math.round(n * 100);
+  const cents = Math.round(n * 100);
+  return paren ? -Math.abs(cents) : cents;
 };
-const C = (cents, cur = "R") => {
+export const C = (cents, cur = "R") => {
   const neg = cents < 0;
   const a = Math.abs(cents);
   const whole = Math.floor(a / 100).toLocaleString("en-US");
   const dec = String(a % 100).padStart(2, "0");
   return `${neg ? "\u2212" : ""}${cur}${whole}.${dec}`;
 };
-const C0 = (cents, cur = "R") => {
+export const C0 = (cents, cur = "R") => {
   const neg = cents < 0;
   return `${neg ? "\u2212" : ""}${cur}${Math.round(Math.abs(cents) / 100).toLocaleString("en-US")}`;
 };
@@ -43,7 +53,7 @@ const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov
 const ymLabel = (ym) => `${MONTHS[+ym.slice(5) - 1]} ${ym.slice(0, 4)}`;
 const ymShort = (ym) => `${MONTHS[+ym.slice(5) - 1]} ’${ym.slice(2, 4)}`;
 
-const parseDateAny = (raw, dayFirst = true) => {
+export const parseDateAny = (raw, dayFirst = true) => {
   if (raw === null || raw === undefined) return null;
   if (typeof raw === "number") {
     // Excel serial
@@ -193,7 +203,7 @@ const seedSnapshots = [
 ];
 
 const initialState = {
-  settings: { currency: "R", currentAge: 42, retirementAge: 65, planningAge: 90, inflationPct: 5.0, investReturnPct: 9.0, cashReturnPct: 4.0, cryptoReturnPct: 9.0, dayFirstDates: true },
+  settings: { currency: "R", currentAge: 42, retirementAge: 65, planningAge: 90, inflationPct: 5.0, investReturnPct: 9.0, cashReturnPct: 4.0, cryptoReturnPct: 9.0, dayFirstDates: true, theme: "dark" },
   comp: { salaryMonthlyC: 8500000, bonusTargetPct: 15, bonusMonth: 12, salaryGrowthPct: 5.5 }, // Table 5
   mortgage: { balanceC: 185000000, ratePct: 10.5, termMonths: 216, fixedExpiry: ymAdd(CUR_YM, 14), paymentOverrideC: 1850000, propertyValueC: 320000000 },
   categories: seedCategories,
@@ -213,13 +223,13 @@ const initialState = {
 /* ============================================================
    ENGINES — pure functions over the data model
    ============================================================ */
-const isFlow = (t, cats) => {
+export const isFlow = (t, cats) => {
   if (t.excluded || t.transfer) return false;
   const c = cats.find((x) => x.id === t.categoryId);
   return !c || c.kind !== "transfer";
 };
 
-const accountBalance = (acc, txns, snapshots, uptoDate) => {
+export const accountBalance = (acc, txns, snapshots, uptoDate) => {
   if (acc.type === "investment" || acc.type === "crypto") {
     const snaps = snapshots.filter((s) => s.accountId === acc.id && (!uptoDate || s.date <= uptoDate)).sort((a, b) => a.date.localeCompare(b.date));
     if (snaps.length) return snaps[snaps.length - 1].balanceC;
@@ -229,7 +239,7 @@ const accountBalance = (acc, txns, snapshots, uptoDate) => {
   return acc.openingC + sum;
 };
 
-const monthlyPayment = (balanceC, ratePct, termMonths) => {
+export const monthlyPayment = (balanceC, ratePct, termMonths) => {
   const r = ratePct / 100 / 12;
   if (termMonths <= 0) return 0;
   if (r === 0) return Math.round(balanceC / termMonths);
@@ -237,7 +247,7 @@ const monthlyPayment = (balanceC, ratePct, termMonths) => {
   return Math.round((balanceC * r * f) / (f - 1));
 };
 
-const amortise = (mortgage, months, rateOverridePct) => {
+export const amortise = (mortgage, months, rateOverridePct) => {
   const rows = [];
   let bal = mortgage.balanceC;
   const rate = rateOverridePct ?? mortgage.ratePct;
@@ -254,7 +264,7 @@ const amortise = (mortgage, months, rateOverridePct) => {
 };
 
 /* recurring / annual matching against actuals for a given month */
-const matchRecurring = (item, txns, ym, cats) => {
+export const matchRecurring = (item, txns, ym, cats) => {
   const hits = txns.filter((t) => !t.excluded && t.categoryId === item.categoryId && t.date.slice(0, 7) === ym);
   const actualC = hits.reduce((s, t) => s + t.amountC, 0);
   const paid = hits.length > 0;
@@ -262,15 +272,16 @@ const matchRecurring = (item, txns, ym, cats) => {
   const material = paid && Math.abs(varianceC) > Math.max(Math.abs(item.amountC) * 0.1, 10000);
   return { hits, actualC, paid, varianceC, material };
 };
-const matchAnnual = (item, txns, year) => {
+export const matchAnnual = (item, txns, year) => {
   const ym = `${year}-${String(item.month).padStart(2, "0")}`;
   const hits = txns.filter((t) => !t.excluded && t.categoryId === item.categoryId && t.date.slice(0, 7) === ym);
   const actualC = hits.reduce((s, t) => s + t.amountC, 0);
   return { ym, hits, actualC, paid: hits.length > 0, varianceC: hits.length ? actualC - item.amountC : 0 };
 };
 
-/* 12-month forecast. Actuals replace plan for elapsed months. */
-const buildForecast = (state, scenario) => {
+/* 12-month forecast, starting at the current month. Elapsed months are outside
+   the window; the current month blends actuals with plan, later months are plan. */
+export const buildForecast = (state, scenario) => {
   const { recurring, annual, txns, categories, comp, mortgage } = state;
   const sc = scenario || { salaryPct: 0, spendPct: 0, inflationDelta: 0, rateDelta: 0, returnDelta: 0 };
   const startYm = nowYm();
@@ -335,8 +346,6 @@ const buildForecast = (state, scenario) => {
         if (!modelCats.has(t.categoryId)) { if (t.amountC >= 0) blendIn += t.amountC; else blendOut += t.amountC; }
       });
       usedIn = blendIn; usedOut = blendOut; mode = "blend";
-    } else if (hasActuals) {
-      usedIn = actIn; usedOut = actOut; mode = "actual";
     }
     const net = usedIn + usedOut;
     cum += net;
@@ -347,7 +356,7 @@ const buildForecast = (state, scenario) => {
 };
 
 /* Long-term annual projection to planning age */
-const buildLongTerm = (state, scenario) => {
+export const buildLongTerm = (state, scenario) => {
   const { settings: st, comp, mortgage, recurring, annual, accounts, txns, snapshots, categories } = state;
   const sc = scenario || { salaryPct: 0, spendPct: 0, inflationDelta: 0, rateDelta: 0, returnDelta: 0 };
   const infl = (st.inflationPct + sc.inflationDelta) / 100;
@@ -436,7 +445,7 @@ const downloadCSV = (filename, headers, rows) => {
 };
 
 /* ---- OFX/QFX parsing ---- */
-const parseOFX = (text) => {
+export const parseOFX = (text) => {
   const out = [];
   const blocks = text.split(/<STMTTRN>/i).slice(1);
   blocks.forEach((b) => {
@@ -466,6 +475,19 @@ export default function App({ boot = null, onPersist = null }) {
 
   const log = (kind, detail) => (s) => ({ ...s, audit: [{ id: uid("aud"), when: new Date().toISOString().slice(0, 16).replace("T", " "), kind, detail }, ...s.audit] });
   const update = (fn, kind, detail) => setState((s) => (kind ? log(kind, detail)(fn(s)) : fn(s)));
+
+  /* Theme. Resolved once: the localStorage mirror wins because index.html has
+     already painted with it, then the persisted setting (absent on rows saved
+     before this feature), then dark. The setting is still written to state so
+     it travels with the account — but with no audit `kind`, because a colour
+     preference does not belong in a financial audit trail. */
+  const [theme, setThemeState] = useState(() => readStoredTheme() ?? state.settings.theme ?? "dark");
+  const setTheme = (next) => {
+    setThemeState(next);
+    update((s) => ({ ...s, settings: { ...s.settings, theme: next } }));
+  };
+  useEffect(() => { applyTheme(theme); storeTheme(theme); }, [theme]);
+  const palette = CHART[theme] || CHART.dark;
 
   const goTxns = (filter) => { setTxnFilter({ account: "all", category: "all", search: "", ...filter }); setPage("transactions"); };
 
@@ -497,7 +519,7 @@ export default function App({ boot = null, onPersist = null }) {
 
   return (
     <div className="app">
-      <style>{CSS}</style>
+      <style>{THEME_CSS + CSS}</style>
       <aside className="nav">
         <div className="brand">
           <div className="brand-mark">▚</div>
@@ -528,16 +550,16 @@ export default function App({ boot = null, onPersist = null }) {
           </div>
         </header>
 
-        {page === "overview" && <Overview {...{ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut, fc, lt, goTxns, cats, catName }} />}
+        {page === "overview" && <Overview {...{ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut, fc, lt, goTxns, cats, catName, palette }} />}
         {page === "transactions" && <Transactions {...{ state, update, cur, ym, txnFilter, setTxnFilter, cats, catName, accName }} />}
-        {page === "accounts" && <Accounts {...{ state, update, cur, goTxns }} />}
+        {page === "accounts" && <Accounts {...{ state, update, cur, goTxns, palette }} />}
         {page === "recurring" && <Recurring {...{ state, update, cur, ym, cats }} />}
         {page === "annual" && <Annual {...{ state, update, cur, ym, cats, goTxns }} />}
-        {page === "compensation" && <Compensation {...{ state, update, cur }} />}
-        {page === "forecast" && <Forecast {...{ state, update, cur, fc, fcScen }} />}
-        {page === "longterm" && <LongTerm {...{ state, update, cur, lt, ltScen }} />}
+        {page === "compensation" && <Compensation {...{ state, update, cur, palette }} />}
+        {page === "forecast" && <Forecast {...{ state, update, cur, fc, fcScen, palette }} />}
+        {page === "longterm" && <LongTerm {...{ state, update, cur, lt, ltScen, palette }} />}
         {page === "imports" && <Imports {...{ state, update, cur, cats, catName, accName }} />}
-        {page === "settings" && <Settings {...{ state, update, cur, fc, lt, catName, accName }} />}
+        {page === "settings" && <Settings {...{ state, update, cur, fc, lt, catName, accName, theme, setTheme }} />}
       </main>
     </div>
   );
@@ -591,7 +613,7 @@ const chartTip = (cur) => ({ payload, label, active }) =>
 /* ============================================================
    PAGES
    ============================================================ */
-function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut, fc, lt, goTxns, cats, catName }) {
+function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut, fc, lt, goTxns, cats, catName, palette }) {
   const spendPct = budgetOut !== 0 ? Math.round((monthSpend / budgetOut) * 100) : 0;
   const byCat = {};
   state.txns.filter((t) => t.date.slice(0, 7) === ym && isFlow(t, cats) && t.amountC < 0)
@@ -617,15 +639,15 @@ function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut
       <Card title="12-month cashflow ribbon" className="span2" right={<span className="muted-s">actual → blend → plan</span>}>
         <ResponsiveContainer width="100%" height={210}>
           <ComposedChart data={fc.rows.map((r) => ({ ...r, name: ymShort(r.ym) }))}>
-            <CartesianGrid stroke="#1d2a24" vertical={false} />
-            <XAxis dataKey="name" tick={{ fill: "#5f7a6d", fontSize: 11 }} axisLine={false} tickLine={false} />
-            <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: "#5f7a6d", fontSize: 11 }} axisLine={false} tickLine={false} width={70} />
+            <CartesianGrid stroke={palette.grid} vertical={false} />
+            <XAxis dataKey="name" tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} />
+            <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} width={70} />
             <Tooltip content={chartTip(cur)} />
-            <ReferenceLine y={0} stroke="#33463d" />
+            <ReferenceLine y={0} stroke={palette.zero} />
             <Bar dataKey="net" name="Net flow" radius={[3, 3, 0, 0]}>
-              {fc.rows.map((r, i) => <Cell key={i} fill={r.mode !== "plan" ? (r.net >= 0 ? "#46c98c" : "#e0a24a") : (r.net >= 0 ? "#2a5c46" : "#6e5730")} />)}
+              {fc.rows.map((r, i) => <Cell key={i} fill={r.mode !== "plan" ? (r.net >= 0 ? palette.pos : palette.neg) : (r.net >= 0 ? palette.posPlan : palette.negPlan)} />)}
             </Bar>
-            <Line dataKey="cum" name="Cumulative" stroke="#8fe6bd" strokeWidth={2} dot={false} />
+            <Line dataKey="cum" name="Cumulative" stroke={palette.line} strokeWidth={2} dot={false} />
           </ComposedChart>
         </ResponsiveContainer>
       </Card>
@@ -660,13 +682,13 @@ function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut
       <Card title="Net worth trajectory" className="span2">
         <ResponsiveContainer width="100%" height={190}>
           <AreaChart data={lt.rows.map((r) => ({ name: r.age, nw: r.netWorthC }))}>
-            <CartesianGrid stroke="#1d2a24" vertical={false} />
-            <XAxis dataKey="name" tick={{ fill: "#5f7a6d", fontSize: 11 }} axisLine={false} tickLine={false} />
-            <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: "#5f7a6d", fontSize: 11 }} axisLine={false} tickLine={false} width={80} />
+            <CartesianGrid stroke={palette.grid} vertical={false} />
+            <XAxis dataKey="name" tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} />
+            <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} width={80} />
             <Tooltip content={chartTip(cur)} />
-            <ReferenceLine x={state.settings.retirementAge} stroke="#e0a24a" strokeDasharray="4 3" label={{ value: "retire", fill: "#e0a24a", fontSize: 11 }} />
-            <Area dataKey="nw" name="Net worth" stroke="#46c98c" fill="url(#nwg)" strokeWidth={2} />
-            <defs><linearGradient id="nwg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#46c98c" stopOpacity={0.28} /><stop offset="100%" stopColor="#46c98c" stopOpacity={0.02} /></linearGradient></defs>
+            <ReferenceLine x={state.settings.retirementAge} stroke={palette.marker} strokeDasharray="4 3" label={{ value: "retire", fill: palette.marker, fontSize: 11 }} />
+            <Area dataKey="nw" name="Net worth" stroke={palette.pos} fill="url(#nwg)" strokeWidth={2} />
+            <defs><linearGradient id="nwg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={palette.pos} stopOpacity={0.28} /><stop offset="100%" stopColor={palette.pos} stopOpacity={0.02} /></linearGradient></defs>
           </AreaChart>
         </ResponsiveContainer>
       </Card>
@@ -754,7 +776,7 @@ function AddTxn({ state, update, ym, cats }) {
   );
 }
 
-function Accounts({ state, update, cur, goTxns }) {
+function Accounts({ state, update, cur, goTxns, palette }) {
   const [recon, setRecon] = useState({});
   const [snap, setSnap] = useState({});
   const groups = [["bank", "Bank"], ["credit", "Credit cards"], ["investment", "Investments"], ["crypto", "Crypto"]];
@@ -787,7 +809,7 @@ function Accounts({ state, update, cur, goTxns }) {
                   <AreaChart data={history(acc)}>
                     <XAxis dataKey="name" hide /><YAxis hide domain={["auto", "auto"]} />
                     <Tooltip content={chartTip(cur)} />
-                    <Area dataKey="bal" name="Balance" stroke={bal >= 0 ? "#46c98c" : "#e0a24a"} fill="none" strokeWidth={1.5} />
+                    <Area dataKey="bal" name="Balance" stroke={bal >= 0 ? palette.pos : palette.neg} fill="none" strokeWidth={1.5} />
                   </AreaChart>
                 </ResponsiveContainer>
                 {isSnap ? (
@@ -925,7 +947,7 @@ function Annual({ state, update, cur, ym, cats, goTxns }) {
   );
 }
 
-function Compensation({ state, update, cur }) {
+function Compensation({ state, update, cur, palette }) {
   const { comp, mortgage } = state;
   const setComp = (patch, msg) => update((s) => ({ ...s, comp: { ...s.comp, ...patch } }), "edit", msg);
   const setMort = (patch, msg) => update((s) => ({ ...s, mortgage: { ...s.mortgage, ...patch } }), "edit", msg);
@@ -957,13 +979,13 @@ function Compensation({ state, update, cur }) {
       <Card className="span2" title="Amortisation — balance & interest vs principal (annual view)">
         <ResponsiveContainer width="100%" height={230}>
           <ComposedChart data={yearMarks.map((r, i) => ({ name: r.ym.slice(0, 4), bal: r.balanceC, int: am.rows.slice(i * 12, i * 12 + 12).reduce((s, x) => s + x.interestC, 0), prin: am.rows.slice(i * 12, i * 12 + 12).reduce((s, x) => s + x.principalC, 0) }))}>
-            <CartesianGrid stroke="#1d2a24" vertical={false} />
-            <XAxis dataKey="name" tick={{ fill: "#5f7a6d", fontSize: 11 }} axisLine={false} tickLine={false} />
-            <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: "#5f7a6d", fontSize: 11 }} axisLine={false} tickLine={false} width={80} />
+            <CartesianGrid stroke={palette.grid} vertical={false} />
+            <XAxis dataKey="name" tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} />
+            <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} width={80} />
             <Tooltip content={chartTip(cur)} /><Legend wrapperStyle={{ fontSize: 12 }} />
-            <Bar dataKey="int" name="Interest / yr" stackId="a" fill="#e0a24a" radius={[0, 0, 0, 0]} />
-            <Bar dataKey="prin" name="Principal / yr" stackId="a" fill="#2f8f63" radius={[3, 3, 0, 0]} />
-            <Line dataKey="bal" name="Balance" stroke="#8fe6bd" strokeWidth={2} dot={false} />
+            <Bar dataKey="int" name="Interest / yr" stackId="a" fill={palette.neg} radius={[0, 0, 0, 0]} />
+            <Bar dataKey="prin" name="Principal / yr" stackId="a" fill={palette.invest} radius={[3, 3, 0, 0]} />
+            <Line dataKey="bal" name="Balance" stroke={palette.line} strokeWidth={2} dot={false} />
           </ComposedChart>
         </ResponsiveContainer>
       </Card>
@@ -990,7 +1012,7 @@ function ScenarioPanel({ state, update }) {
   );
 }
 
-function Forecast({ state, update, cur, fc, fcScen }) {
+function Forecast({ state, update, cur, fc, fcScen, palette }) {
   const chart = fc.rows.map((r, i) => ({ name: ymShort(r.ym), base: r.cum, scen: fcScen ? fcScen.rows[i].cum : undefined }));
   return (
     <div className="grid">
@@ -998,13 +1020,13 @@ function Forecast({ state, update, cur, fc, fcScen }) {
       <Card className="span3" title="Cumulative 12-month cashflow">
         <ResponsiveContainer width="100%" height={230}>
           <LineChart data={chart}>
-            <CartesianGrid stroke="#1d2a24" vertical={false} />
-            <XAxis dataKey="name" tick={{ fill: "#5f7a6d", fontSize: 11 }} axisLine={false} tickLine={false} />
-            <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: "#5f7a6d", fontSize: 11 }} axisLine={false} tickLine={false} width={80} />
+            <CartesianGrid stroke={palette.grid} vertical={false} />
+            <XAxis dataKey="name" tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} />
+            <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} width={80} />
             <Tooltip content={chartTip(cur)} /><Legend wrapperStyle={{ fontSize: 12 }} />
-            <ReferenceLine y={0} stroke="#33463d" />
-            <Line dataKey="base" name="Base case" stroke="#46c98c" strokeWidth={2} dot={false} />
-            {fcScen && <Line dataKey="scen" name="Scenario" stroke="#e0a24a" strokeWidth={2} strokeDasharray="6 3" dot={false} />}
+            <ReferenceLine y={0} stroke={palette.zero} />
+            <Line dataKey="base" name="Base case" stroke={palette.pos} strokeWidth={2} dot={false} />
+            {fcScen && <Line dataKey="scen" name="Scenario" stroke={palette.neg} strokeWidth={2} strokeDasharray="6 3" dot={false} />}
           </LineChart>
         </ResponsiveContainer>
       </Card>
@@ -1031,7 +1053,7 @@ function Forecast({ state, update, cur, fc, fcScen }) {
   );
 }
 
-function LongTerm({ state, update, cur, lt, ltScen }) {
+function LongTerm({ state, update, cur, lt, ltScen, palette }) {
   const st = state.settings;
   const chart = lt.rows.map((r, i) => ({ name: r.age, cash: r.cashC, invest: r.investC, crypto: r.cryptoC, property: r.propertyC, mort: -r.mortC, nw: r.netWorthC, scen: ltScen ? ltScen.rows[i]?.netWorthC : undefined }));
   return (
@@ -1048,18 +1070,18 @@ function LongTerm({ state, update, cur, lt, ltScen }) {
       <Card className="span3" title="Assets vs liabilities to planning age" right={<span className="muted-s">history = actual balances today · forecast beyond</span>}>
         <ResponsiveContainer width="100%" height={260}>
           <ComposedChart data={chart}>
-            <CartesianGrid stroke="#1d2a24" vertical={false} />
-            <XAxis dataKey="name" tick={{ fill: "#5f7a6d", fontSize: 11 }} axisLine={false} tickLine={false} />
-            <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: "#5f7a6d", fontSize: 11 }} axisLine={false} tickLine={false} width={86} />
+            <CartesianGrid stroke={palette.grid} vertical={false} />
+            <XAxis dataKey="name" tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} />
+            <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} width={86} />
             <Tooltip content={chartTip(cur)} /><Legend wrapperStyle={{ fontSize: 12 }} />
-            <ReferenceLine x={st.retirementAge} stroke="#e0a24a" strokeDasharray="4 3" />
-            <Area dataKey="cash" name="Cash" stackId="a" fill="#1f4d38" stroke="none" />
-            <Area dataKey="invest" name="Investments" stackId="a" fill="#2f8f63" stroke="none" />
-            <Area dataKey="crypto" name="Crypto" stackId="a" fill="#57c491" stroke="none" />
-            <Area dataKey="property" name="Property" stackId="a" fill="#28402f" stroke="none" />
-            <Area dataKey="mort" name="Mortgage" fill="#5c3c22" stroke="none" />
-            <Line dataKey="nw" name="Net worth (base)" stroke="#eafff4" strokeWidth={2} dot={false} />
-            {ltScen && <Line dataKey="scen" name="Net worth (scenario)" stroke="#e0a24a" strokeWidth={2} strokeDasharray="6 3" dot={false} />}
+            <ReferenceLine x={st.retirementAge} stroke={palette.marker} strokeDasharray="4 3" />
+            <Area dataKey="cash" name="Cash" stackId="a" fill={palette.cash} stroke="none" />
+            <Area dataKey="invest" name="Investments" stackId="a" fill={palette.invest} stroke="none" />
+            <Area dataKey="crypto" name="Crypto" stackId="a" fill={palette.crypto} stroke="none" />
+            <Area dataKey="property" name="Property" stackId="a" fill={palette.property} stroke="none" />
+            <Area dataKey="mort" name="Mortgage" fill={palette.mortgage} stroke="none" />
+            <Line dataKey="nw" name="Net worth (base)" stroke={palette.nwLine} strokeWidth={2} dot={false} />
+            {ltScen && <Line dataKey="scen" name="Net worth (scenario)" stroke={palette.neg} strokeWidth={2} strokeDasharray="6 3" dot={false} />}
           </ComposedChart>
         </ResponsiveContainer>
       </Card>
@@ -1365,7 +1387,7 @@ function Imports({ state, update, cur, cats, catName, accName }) {
 /* ============================================================
    SETTINGS · EXPORT · AUDIT TRAIL
    ============================================================ */
-function Settings({ state, update, cur, fc, lt, catName, accName }) {
+function Settings({ state, update, cur, fc, lt, catName, accName, theme, setTheme }) {
   const st = state.settings;
   const set = (patch, msg) => update((s) => ({ ...s, settings: { ...s.settings, ...patch } }), "edit", msg);
   return (
@@ -1381,6 +1403,7 @@ function Settings({ state, update, cur, fc, lt, catName, accName }) {
           <label>Crypto return %/yr<PctInput value={st.cryptoReturnPct} onCommit={(v) => set({ cryptoReturnPct: v }, `Crypto return → ${v}%`)} /></label>
           <label>Cash return %/yr<PctInput value={st.cashReturnPct} onCommit={(v) => set({ cashReturnPct: v }, `Cash return → ${v}%`)} /></label>
           <label className="chk"><input type="checkbox" checked={st.dayFirstDates} onChange={(e) => set({ dayFirstDates: e.target.checked })} /> Statement dates are day-first (dd/mm/yyyy)</label>
+          <label className="chk"><input type="checkbox" checked={theme === "light"} onChange={(e) => setTheme(e.target.checked ? "light" : "dark")} /> Light theme</label>
         </div>
       </Card>
       <Card title="Export">
@@ -1423,82 +1446,82 @@ function Settings({ state, update, cur, fc, lt, catName, accName }) {
    ============================================================ */
 const CSS = `
   * { box-sizing: border-box; margin: 0; }
-  .app { display: flex; min-height: 100vh; background: #0b1210; color: #d7e5dd;
+  .app { display: flex; min-height: 100vh; background: var(--bg); color: var(--text);
     font: 14px/1.45 -apple-system, "Segoe UI", Inter, Roboto, sans-serif; }
   .mono, .amt, .num-in, .stat-value, .acc-bal, td.mono, .tl-item b { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
 
   /* nav */
-  .nav { width: 216px; flex: none; background: #0e1714; border-right: 1px solid #1a2621; padding: 18px 10px; display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; height: 100vh; }
+  .nav { width: 216px; flex: none; background: var(--surface-nav); border-right: 1px solid var(--border-soft); padding: 18px 10px; display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; height: 100vh; }
   .brand { display: flex; gap: 10px; align-items: center; padding: 4px 8px 18px; }
-  .brand-mark { width: 34px; height: 34px; border-radius: 8px; background: linear-gradient(135deg, #123527, #2f8f63); display: grid; place-items: center; color: #bff3d9; font-size: 17px; }
-  .brand-name { font-weight: 700; letter-spacing: .18em; font-size: 12px; color: #eafff4; }
-  .brand-sub { font-size: 10px; color: #5f7a6d; letter-spacing: .04em; }
-  .nav-item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 8px 10px; border: 0; border-radius: 7px; background: transparent; color: #8ba899; font-size: 13px; cursor: pointer; }
-  .nav-item:hover { background: #142019; color: #d7e5dd; }
-  .nav-item.on { background: #16281f; color: #7ee2ae; box-shadow: inset 2px 0 0 #46c98c; }
+  .brand-mark { width: 34px; height: 34px; border-radius: 8px; background: linear-gradient(135deg, var(--brand-grad-from), var(--accent-deep)); display: grid; place-items: center; color: var(--brand-mark-text); font-size: 17px; }
+  .brand-name { font-weight: 700; letter-spacing: .18em; font-size: 12px; color: var(--text-strong); }
+  .brand-sub { font-size: 10px; color: var(--text-muted); letter-spacing: .04em; }
+  .nav-item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 8px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--text-nav); font-size: 13px; cursor: pointer; }
+  .nav-item:hover { background: var(--surface-hover-nav); color: var(--text); }
+  .nav-item.on { background: var(--surface-active-nav); color: var(--accent); box-shadow: inset 2px 0 0 var(--accent-strong); }
   .nav-ic { width: 16px; text-align: center; opacity: .8; }
-  .nav-badge { margin-left: auto; background: #1d3328; color: #7ee2ae; border-radius: 9px; font-size: 10px; padding: 1px 7px; }
-  .nav-foot { margin-top: auto; font-size: 10px; color: #43584d; padding: 10px 8px 0; line-height: 1.6; border-top: 1px solid #1a2621; }
+  .nav-badge { margin-left: auto; background: var(--accent-bg-badge); color: var(--accent); border-radius: 9px; font-size: 10px; padding: 1px 7px; }
+  .nav-foot { margin-top: auto; font-size: 10px; color: var(--text-faint); padding: 10px 8px 0; line-height: 1.6; border-top: 1px solid var(--border-soft); }
 
   /* layout */
   .main { flex: 1; padding: 0 26px 40px; min-width: 0; }
-  .topbar { display: flex; align-items: center; gap: 18px; padding: 16px 0 14px; border-bottom: 1px solid #1a2621; margin-bottom: 18px; position: sticky; top: 0; background: #0b1210ee; backdrop-filter: blur(4px); z-index: 5; }
-  .crumb { font-size: 17px; font-weight: 600; color: #eafff4; }
-  .month-sel { display: flex; align-items: center; gap: 4px; background: #121c17; border: 1px solid #223229; border-radius: 8px; padding: 3px 6px; }
-  .month-sel span { min-width: 76px; text-align: center; font-size: 13px; color: #bfe8d2; }
-  .month-sel button { background: none; border: 0; color: #7ee2ae; cursor: pointer; font-size: 15px; padding: 2px 8px; border-radius: 5px; }
-  .month-sel button:hover { background: #1c2c23; }
-  .month-sel .today { font-size: 11px; color: #e0a24a; }
-  .scen-pill { margin-left: auto; font-size: 10px; letter-spacing: .14em; padding: 4px 10px; border-radius: 20px; border: 1px solid #223229; color: #5f7a6d; }
-  .scen-pill[data-on="true"] { border-color: #6e5730; color: #e0a24a; background: #211a0e; }
+  .topbar { display: flex; align-items: center; gap: 18px; padding: 16px 0 14px; border-bottom: 1px solid var(--border-soft); margin-bottom: 18px; position: sticky; top: 0; background: var(--bg-translucent); backdrop-filter: blur(4px); z-index: 5; }
+  .crumb { font-size: 17px; font-weight: 600; color: var(--text-strong); }
+  .month-sel { display: flex; align-items: center; gap: 4px; background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: 8px; padding: 3px 6px; }
+  .month-sel span { min-width: 76px; text-align: center; font-size: 13px; color: var(--accent-text-2); }
+  .month-sel button { background: none; border: 0; color: var(--accent); cursor: pointer; font-size: 15px; padding: 2px 8px; border-radius: 5px; }
+  .month-sel button:hover { background: var(--surface-hover-strong); }
+  .month-sel .today { font-size: 11px; color: var(--neg); }
+  .scen-pill { margin-left: auto; font-size: 10px; letter-spacing: .14em; padding: 4px 10px; border-radius: 20px; border: 1px solid var(--border-strong); color: var(--text-muted); }
+  .scen-pill[data-on="true"] { border-color: var(--neg-border); color: var(--neg); background: var(--neg-bg); }
 
   .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
   .span2 { grid-column: span 2; } .span3 { grid-column: span 3; }
   .stat-row { grid-column: span 3; display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; }
 
-  .card { background: #101a15; border: 1px solid #1c2a23; border-radius: 12px; padding: 16px 18px; min-width: 0; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; min-width: 0; }
   .card-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }
-  .card-head h3 { font-size: 12px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: #7d9c8c; }
-  .acc-type { font-size: 9px; letter-spacing: .12em; color: #46c98c; margin-right: 8px; text-transform: uppercase; background: #14261d; padding: 2px 7px; border-radius: 4px; }
+  .card-head h3 { font-size: 12px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--text-muted-2); }
+  .acc-type { font-size: 9px; letter-spacing: .12em; color: var(--accent-strong); margin-right: 8px; text-transform: uppercase; background: var(--accent-bg-chip); padding: 2px 7px; border-radius: 4px; }
 
-  .stat { background: #101a15; border: 1px solid #1c2a23; border-radius: 12px; padding: 14px 16px; }
-  .stat.click { cursor: pointer; } .stat.click:hover { border-color: #2f8f63; }
-  .stat-label { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: #5f7a6d; margin-bottom: 6px; }
-  .stat-value { font-size: 21px; font-weight: 600; color: #eafff4; }
-  .stat-value.pos { color: #7ee2ae; } .stat-value.neg { color: #e0a24a; } .stat-value.warn { color: #f2b04d; }
-  .stat-sub { font-size: 11px; color: #5f7a6d; margin-top: 4px; }
+  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .stat.click { cursor: pointer; } .stat.click:hover { border-color: var(--accent-deep); }
+  .stat-label { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; }
+  .stat-value { font-size: 21px; font-weight: 600; color: var(--text-strong); }
+  .stat-value.pos { color: var(--pos); } .stat-value.neg { color: var(--neg); } .stat-value.warn { color: var(--warn); }
+  .stat-sub { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
 
-  .amt.pos { color: #7ee2ae; } .amt.neg { color: #e0a24a; } .amt.warn { color: #f2b04d; font-weight: 600; }
-  .amt.muted-s { color: #5f7a6d; } .scen-amt { color: #e0a24a; }
-  .warn-t { color: #f2b04d; }
-  .muted { color: #7d9c8c; font-size: 13px; } .muted-s { color: #5f7a6d; font-size: 11.5px; }
-  .empty { color: #5f7a6d; font-size: 13px; padding: 14px 4px; }
-  .acc-bal { font-size: 24px; font-weight: 600; color: #eafff4; margin-bottom: 4px; }
+  .amt.pos { color: var(--pos); } .amt.neg { color: var(--neg); } .amt.warn { color: var(--warn); font-weight: 600; }
+  .amt.muted-s { color: var(--text-muted); } .scen-amt { color: var(--neg); }
+  .warn-t { color: var(--warn); }
+  .muted { color: var(--text-muted-2); font-size: 13px; } .muted-s { color: var(--text-muted); font-size: 11.5px; }
+  .empty { color: var(--text-muted); font-size: 13px; padding: 14px 4px; }
+  .acc-bal { font-size: 24px; font-weight: 600; color: var(--text-strong); margin-bottom: 4px; }
 
   /* tables */
   .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .tbl th { text-align: left; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: #5f7a6d; padding: 6px 8px; border-bottom: 1px solid #1c2a23; font-weight: 600; }
-  .tbl td { padding: 6px 8px; border-bottom: 1px solid #15211b; vertical-align: middle; }
-  .tbl tr:hover td { background: #0f1a14; }
+  .tbl th { text-align: left; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-muted); padding: 6px 8px; border-bottom: 1px solid var(--border); font-weight: 600; }
+  .tbl td { padding: 6px 8px; border-bottom: 1px solid var(--border-subtle); vertical-align: middle; }
+  .tbl tr:hover td { background: var(--surface-hover); }
   .tbl .r, th.r { text-align: right; }
   .tbl tr.dim { opacity: .38; }
-  .tbl tr.hl td { background: #10201780; }
+  .tbl tr.hl td { background: var(--row-hl); }
   .scroll-y { overflow-y: auto; }
 
-  .chip { display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 10px; background: #182420; color: #7d9c8c; border: 1px solid #223229; letter-spacing: .03em; white-space: nowrap; }
-  .chip.ok { background: #12291d; color: #7ee2ae; border-color: #235c40; }
-  .chip.pending { background: #211d0e; color: #d9c26a; border-color: #55491f; }
-  .chip.warn { background: #2a1c0d; color: #f2b04d; border-color: #6e5730; }
-  .chip.transfer { background: #14202a; color: #7ab8e0; border-color: #29465c; }
+  .chip { display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 10px; background: var(--chip-bg); color: var(--text-muted-2); border: 1px solid var(--border-strong); letter-spacing: .03em; white-space: nowrap; }
+  .chip.ok { background: var(--accent-bg); color: var(--accent); border-color: var(--accent-border); }
+  .chip.pending { background: var(--pending-bg); color: var(--pending); border-color: var(--pending-border); }
+  .chip.warn { background: var(--warn-bg); color: var(--warn); border-color: var(--warn-border); }
+  .chip.transfer { background: var(--transfer-bg); color: var(--transfer); border-color: var(--transfer-border); }
   .chip.ghost { background: transparent; }
   .chip.click { cursor: pointer; }
 
   /* inputs */
-  input, select { background: #0d1712; border: 1px solid #223229; color: #d7e5dd; border-radius: 6px; padding: 5px 8px; font: inherit; }
-  input:focus, select:focus { outline: none; border-color: #2f8f63; }
+  input, select { background: var(--surface-sunken); border: 1px solid var(--border-strong); color: var(--text); border-radius: 6px; padding: 5px 8px; font: inherit; }
+  input:focus, select:focus { outline: none; border-color: var(--accent-deep); }
   .cat-sel { max-width: 175px; font-size: 12px; }
   .cell-in { width: 100%; max-width: 170px; background: transparent; border-color: transparent; }
-  .cell-in:hover, .cell-in:focus { border-color: #223229; background: #0d1712; }
+  .cell-in:hover, .cell-in:focus { border-color: var(--border-strong); background: var(--surface-sunken); }
   .cell-in.day { width: 54px; }
   .num-in { width: 110px; text-align: right; }
   .num-in.pct { width: 74px; }
@@ -1506,61 +1529,61 @@ const CSS = `
   .filters input { width: 170px; }
   .form { display: flex; flex-direction: column; gap: 10px; }
   .form.form-row { flex-direction: row; flex-wrap: wrap; gap: 16px; }
-  .form label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: #7d9c8c; letter-spacing: .04em; }
-  .form label.chk, .switch { flex-direction: row; align-items: center; gap: 8px; font-size: 12px; color: #a9c4b6; cursor: pointer; display: flex; }
-  .add-row { display: flex; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed #1c2a23; flex-wrap: wrap; }
+  .form label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-muted-2); letter-spacing: .04em; }
+  .form label.chk, .switch { flex-direction: row; align-items: center; gap: 8px; font-size: 12px; color: var(--text-soft); cursor: pointer; display: flex; }
+  .add-row { display: flex; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); flex-wrap: wrap; }
   .actions { display: flex; justify-content: space-between; margin-top: 14px; }
   .btn-col { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
 
-  .btn { background: #1c4a34; color: #baf3d6; border: 1px solid #2f8f63; border-radius: 7px; padding: 7px 16px; font: inherit; font-size: 13px; cursor: pointer; }
-  .btn:hover { background: #235c40; } .btn:disabled { opacity: .4; cursor: default; }
-  .btn.ghost { background: transparent; border-color: #223229; color: #7d9c8c; }
-  .btn.ghost:hover { color: #d7e5dd; border-color: #2f8f63; }
-  .mini { background: transparent; border: 1px solid transparent; color: #5f7a6d; border-radius: 5px; padding: 2px 7px; cursor: pointer; font-size: 12px; }
-  .mini:hover { color: #7ee2ae; border-color: #223229; }
+  .btn { background: var(--btn-bg); color: var(--btn-text); border: 1px solid var(--accent-deep); border-radius: 7px; padding: 7px 16px; font: inherit; font-size: 13px; cursor: pointer; }
+  .btn:hover { background: var(--btn-bg-hover); } .btn:disabled { opacity: .4; cursor: default; }
+  .btn.ghost { background: transparent; border-color: var(--border-strong); color: var(--text-muted-2); }
+  .btn.ghost:hover { color: var(--text); border-color: var(--accent-deep); }
+  .mini { background: transparent; border: 1px solid transparent; color: var(--text-muted); border-radius: 5px; padding: 2px 7px; cursor: pointer; font-size: 12px; }
+  .mini:hover { color: var(--accent); border-color: var(--border-strong); }
 
-  .banner { grid-column: span 3; background: #0f2018; border: 1px solid #235c40; color: #a9d8bd; border-radius: 10px; padding: 10px 14px; font-size: 13px; margin-bottom: 12px; }
-  .banner.warn { background: #211a0e; border-color: #6e5730; color: #e8c48a; }
-  .callout { margin-top: 12px; padding: 10px 12px; border-left: 2px solid #2f8f63; background: #0e1a14; font-size: 12.5px; color: #a9c4b6; border-radius: 0 8px 8px 0; }
+  .banner { grid-column: span 3; background: var(--accent-bg-banner); border: 1px solid var(--accent-border); color: var(--accent-text-soft); border-radius: 10px; padding: 10px 14px; font-size: 13px; margin-bottom: 12px; }
+  .banner.warn { background: var(--neg-bg); border-color: var(--neg-border); color: var(--neg-text-soft); }
+  .callout { margin-top: 12px; padding: 10px 12px; border-left: 2px solid var(--accent-deep); background: var(--accent-bg-soft); font-size: 12.5px; color: var(--text-soft); border-radius: 0 8px 8px 0; }
 
   /* drilldown bar rows */
-  .bar-row { display: grid; grid-template-columns: 110px 1fr 92px; gap: 10px; align-items: center; width: 100%; background: none; border: 0; color: #a9c4b6; font: inherit; font-size: 12.5px; padding: 5px 2px; cursor: pointer; text-align: left; border-radius: 6px; }
-  .bar-row:hover { background: #0f1a14; }
+  .bar-row { display: grid; grid-template-columns: 110px 1fr 92px; gap: 10px; align-items: center; width: 100%; background: none; border: 0; color: var(--text-soft); font: inherit; font-size: 12.5px; padding: 5px 2px; cursor: pointer; text-align: left; border-radius: 6px; }
+  .bar-row:hover { background: var(--surface-hover); }
   .bar-row .r, .bar-row .amt { text-align: right; }
-  .bar-track { height: 7px; background: #15211b; border-radius: 4px; overflow: hidden; }
-  .bar-fill { display: block; height: 100%; background: linear-gradient(90deg, #2f8f63, #e0a24a); border-radius: 4px; }
+  .bar-track { height: 7px; background: var(--track); border-radius: 4px; overflow: hidden; }
+  .bar-fill { display: block; height: 100%; background: linear-gradient(90deg, var(--accent-deep), var(--neg)); border-radius: 4px; }
 
   /* annual timeline */
   .timeline { display: grid; grid-template-columns: repeat(12, 1fr); gap: 6px; }
-  .tl-month { background: #0d1712; border: 1px solid #1c2a23; border-radius: 8px; min-height: 84px; padding: 6px; }
-  .tl-month.now { border-color: #2f8f63; }
-  .tl-label { font-size: 10px; letter-spacing: .1em; color: #5f7a6d; margin-bottom: 5px; text-align: center; }
-  .tl-item { font-size: 10px; line-height: 1.3; background: #211d0e; border: 1px solid #55491f; color: #d9c26a; border-radius: 6px; padding: 4px 5px; margin-bottom: 4px; }
-  .tl-item.paid { background: #12291d; border-color: #235c40; color: #7ee2ae; }
+  .tl-month { background: var(--surface-sunken); border: 1px solid var(--border); border-radius: 8px; min-height: 84px; padding: 6px; }
+  .tl-month.now { border-color: var(--accent-deep); }
+  .tl-label { font-size: 10px; letter-spacing: .1em; color: var(--text-muted); margin-bottom: 5px; text-align: center; }
+  .tl-item { font-size: 10px; line-height: 1.3; background: var(--pending-bg); border: 1px solid var(--pending-border); color: var(--pending); border-radius: 6px; padding: 4px 5px; margin-bottom: 4px; }
+  .tl-item.paid { background: var(--accent-bg); border-color: var(--accent-border); color: var(--accent); }
 
   /* imports */
   .steps { display: flex; gap: 10px; }
-  .step { flex: 1; display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: #101a15; border: 1px solid #1c2a23; border-radius: 10px; color: #5f7a6d; font-size: 13px; }
-  .step.on { border-color: #2f8f63; color: #baf3d6; }
-  .step.done { color: #7d9c8c; }
+  .step { flex: 1; display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; color: var(--text-muted); font-size: 13px; }
+  .step.on { border-color: var(--accent-deep); color: var(--step-on-text); }
+  .step.done { color: var(--text-muted-2); }
   .step-n { width: 22px; height: 22px; border-radius: 50%; border: 1px solid currentColor; display: grid; place-items: center; font-size: 11px; flex: none; }
-  .drop { border: 1.5px dashed #2b4033; border-radius: 12px; padding: 34px 20px; text-align: center; color: #a9c4b6; cursor: pointer; display: flex; flex-direction: column; gap: 8px; align-items: center; }
-  .drop:hover { border-color: #2f8f63; background: #0e1a14; }
-  .drop-ic { font-size: 26px; color: #46c98c; }
+  .drop { border: 1.5px dashed var(--drop-border); border-radius: 12px; padding: 34px 20px; text-align: center; color: var(--text-soft); cursor: pointer; display: flex; flex-direction: column; gap: 8px; align-items: center; }
+  .drop:hover { border-color: var(--accent-deep); background: var(--accent-bg-soft); }
+  .drop-ic { font-size: 26px; color: var(--accent-strong); }
 
   /* scenario */
   .scen-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; margin-bottom: 8px; }
   .scen-grid[data-off="true"] { opacity: .35; pointer-events: none; }
-  .scen-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: #7d9c8c; }
+  .scen-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-muted-2); }
 
-  .recon { margin-top: 8px; border-top: 1px dashed #1c2a23; padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .recon { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
   .recon-row { display: flex; gap: 8px; } .recon-row input { flex: 1; min-width: 0; }
   .recon-result { font-size: 12px; padding: 7px 10px; border-radius: 7px; }
-  .recon-result.ok { background: #12291d; color: #7ee2ae; }
-  .recon-result.bad { background: #2a1c0d; color: #e8c48a; }
+  .recon-result.ok { background: var(--accent-bg); color: var(--accent); }
+  .recon-result.bad { background: var(--warn-bg); color: var(--neg-text-soft); }
 
-  .tip { background: #0e1a14; border: 1px solid #235c40; border-radius: 8px; padding: 8px 11px; font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
-  .tip-t { color: #7d9c8c; margin-bottom: 4px; }
+  .tip { background: var(--accent-bg-soft); border: 1px solid var(--accent-border); border-radius: 8px; padding: 8px 11px; font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
+  .tip-t { color: var(--text-muted-2); margin-bottom: 4px; }
 
   @media (max-width: 1100px) {
     .grid { grid-template-columns: 1fr; }
