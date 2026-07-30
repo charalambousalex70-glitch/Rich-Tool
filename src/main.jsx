@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
 import { supabase } from "./supabaseClient.js";
+import { THEME_CSS } from "./theme.js";
 
 /* ============================================================
    Root shell: authentication + persistence around the app.
@@ -61,7 +62,7 @@ function AuthScreen({ onDemo }) {
         <div className="auth-div" />
         <button className="auth-link dim" onClick={onDemo}>Try the demo without an account (nothing is saved)</button>
       </div>
-      <style>{AUTH_CSS}</style>
+      <style>{THEME_CSS + AUTH_CSS}</style>
     </div>
   );
 }
@@ -122,12 +123,12 @@ function Root() {
     <>
       <div className="shell-bar demo">Demo mode — nothing is saved.{supabase && <button onClick={() => setDemo(false)}>Sign in</button>}</div>
       <App />
-      <style>{BAR_CSS}</style>
+      <style>{THEME_CSS + BAR_CSS}</style>
     </>
   );
 
   if (!session) return <AuthScreen onDemo={() => setDemo(true)} />;
-  if (boot === undefined) return <div className="shell-load">Loading your data…<style>{BAR_CSS}</style></div>;
+  if (boot === undefined) return <div className="shell-load">Loading your data…<style>{THEME_CSS + BAR_CSS}</style></div>;
 
   return (
     <>
@@ -139,44 +140,44 @@ function Root() {
         <button onClick={() => supabase.auth.signOut()}>Sign out</button>
       </div>
       <App boot={boot} onPersist={onPersist} />
-      <style>{BAR_CSS}</style>
+      <style>{THEME_CSS + BAR_CSS}</style>
     </>
   );
 }
 
 const AUTH_CSS = `
-  .auth-wrap { min-height: 100vh; display: grid; place-items: center; background: #0b1210;
+  .auth-wrap { min-height: 100vh; display: grid; place-items: center; background: var(--bg);
     font-family: "Inter", -apple-system, system-ui, sans-serif; }
-  .auth-card { width: min(360px, 92vw); background: #101a15; border: 1px solid #1d2a24; border-radius: 14px;
+  .auth-card { width: min(360px, 92vw); background: var(--surface); border: 1px solid var(--border-2); border-radius: 14px;
     padding: 28px 26px; display: flex; flex-direction: column; gap: 12px; }
-  .auth-brand { color: #eafff4; font-weight: 800; letter-spacing: 3px; font-size: 18px; }
-  .auth-brand span { color: #46c98c; }
-  .auth-sub { color: #5f7a6d; font-size: 12.5px; margin-bottom: 6px; }
-  .auth-l { color: #9db8ab; font-size: 12px; display: flex; flex-direction: column; gap: 5px; }
-  .auth-l input { background: #0b1210; border: 1px solid #1d2a24; border-radius: 8px; color: #eafff4;
+  .auth-brand { color: var(--text-strong); font-weight: 800; letter-spacing: 3px; font-size: 18px; }
+  .auth-brand span { color: var(--accent-strong); }
+  .auth-sub { color: var(--text-muted); font-size: 12.5px; margin-bottom: 6px; }
+  .auth-l { color: var(--text-label); font-size: 12px; display: flex; flex-direction: column; gap: 5px; }
+  .auth-l input { background: var(--bg); border: 1px solid var(--border-2); border-radius: 8px; color: var(--text-strong);
     padding: 9px 11px; font-size: 14px; outline: none; }
-  .auth-l input:focus { border-color: #2f8f63; }
-  .auth-btn { margin-top: 6px; background: #2f8f63; color: #06120c; font-weight: 700; border: none;
+  .auth-l input:focus { border-color: var(--accent-deep); }
+  .auth-btn { margin-top: 6px; background: var(--accent-deep); color: var(--on-accent); font-weight: 700; border: none;
     border-radius: 8px; padding: 10px; font-size: 14px; cursor: pointer; }
   .auth-btn:disabled { opacity: .6; }
-  .auth-link { background: none; border: none; color: #7ee2ae; font-size: 12.5px; cursor: pointer; padding: 2px; }
-  .auth-link.dim { color: #5f7a6d; }
-  .auth-div { border-top: 1px solid #1d2a24; margin: 4px 0; }
+  .auth-link { background: none; border: none; color: var(--accent); font-size: 12.5px; cursor: pointer; padding: 2px; }
+  .auth-link.dim { color: var(--text-muted); }
+  .auth-div { border-top: 1px solid var(--border-2); margin: 4px 0; }
   .auth-msg { font-size: 12.5px; border-radius: 8px; padding: 8px 10px; }
-  .auth-msg.err { background: #2a1a12; color: #e0a24a; }
-  .auth-msg.ok { background: #12281d; color: #7ee2ae; }
+  .auth-msg.err { background: var(--neg-bg-2); color: var(--neg); }
+  .auth-msg.ok { background: var(--accent-bg-2); color: var(--accent); }
 `;
 
 const BAR_CSS = `
   .shell-bar { position: sticky; top: 0; z-index: 50; display: flex; align-items: center; gap: 14px;
-    justify-content: flex-end; padding: 6px 14px; background: #0d1512; border-bottom: 1px solid #1d2a24;
-    color: #5f7a6d; font: 12px "Inter", system-ui, sans-serif; }
-  .shell-bar.demo { justify-content: center; color: #e0a24a; background: #16130c; }
-  .shell-bar button { background: none; border: 1px solid #1d2a24; color: #9db8ab; border-radius: 6px;
+    justify-content: flex-end; padding: 6px 14px; background: var(--surface-bar); border-bottom: 1px solid var(--border-2);
+    color: var(--text-muted); font: 12px "Inter", system-ui, sans-serif; }
+  .shell-bar.demo { justify-content: center; color: var(--neg); background: var(--demo-bg); }
+  .shell-bar button { background: none; border: 1px solid var(--border-2); color: var(--text-label); border-radius: 6px;
     padding: 3px 10px; font-size: 11.5px; cursor: pointer; }
-  .shell-bar .save.saved { color: #46c98c; }
-  .shell-bar .save.error { color: #e0a24a; }
-  .shell-load { min-height: 100vh; display: grid; place-items: center; background: #0b1210; color: #5f7a6d;
+  .shell-bar .save.saved { color: var(--accent-strong); }
+  .shell-bar .save.error { color: var(--neg); }
+  .shell-load { min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--text-muted);
     font: 14px "Inter", system-ui, sans-serif; }
 `;
 

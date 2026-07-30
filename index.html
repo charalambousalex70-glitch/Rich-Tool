@@ -3,9 +3,24 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
     <title>Ledgerline — personal finance</title>
-    <style>body { margin: 0; background: #0b1210; }</style>
+    <!-- Runs before the bundle so the very first paint uses the stored theme.
+         The app's own stylesheet redefines --bg from src/theme.js with the same
+         values at higher specificity; only --bg is duplicated here, because the
+         page background is all that is painted before React mounts. -->
+    <script>
+      (function () {
+        var t = "dark";
+        try { var s = localStorage.getItem("ledgerline.theme"); if (s === "light" || s === "dark") t = s; } catch (e) {}
+        document.documentElement.setAttribute("data-theme", t);
+      })();
+    </script>
+    <style>
+      html[data-theme="dark"] { --bg: #0b1210; }
+      html[data-theme="light"] { --bg: #f4f7f5; }
+      body { margin: 0; background: var(--bg, #0b1210); }
+    </style>
   </head>
   <body>
     <div id="root"></div>
