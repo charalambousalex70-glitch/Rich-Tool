@@ -12,13 +12,22 @@ import { THEME_CSS, CHART, readStoredTheme, storeTheme, applyTheme } from "./the
    ============================================================ */
 export const toC = (v) => {
   if (v === null || v === undefined || v === "") return 0;
-  const s = String(v).replace(/[^\d.\-,]/g, "");
+  const raw = String(v).trim();
+  // accounting exports write a negative as "(45.00)" or "R(45.00)" — read the
+  // parentheses off the raw value, before the strip below removes them.
+  // Parens force the sign negative, they do not flip it, so "(-45.00)" stays -45.00.
+  const paren = /^[^\d]*\([^)]*\d[^)]*\)[^\d]*$/.test(raw);
+  const s = raw.replace(/[^\d.\-,]/g, "");
   // handle "1,234.56" and "1.234,56"
   let n;
   if (/,\d{1,2}$/.test(s)) n = parseFloat(s.replace(/\./g, "").replace(",", "."));
+  // dot-grouped thousands, e.g. "1.234" and "12.345.678": a non-zero leading
+  // group of 1-3 digits followed by groups of exactly three digits.
+  else if (/^-?[1-9]\d{0,2}(\.\d{3})+$/.test(s)) n = parseFloat(s.replace(/\./g, ""));
   else n = parseFloat(s.replace(/,/g, ""));
   if (isNaN(n)) return 0;
-  return Math.round(n * 100);
+  const cents = Math.round(n * 100);
+  return paren ? -Math.abs(cents) : cents;
 };
 export const C = (cents, cur = "R") => {
   const neg = cents < 0;
@@ -270,7 +279,8 @@ export const matchAnnual = (item, txns, year) => {
   return { ym, hits, actualC, paid: hits.length > 0, varianceC: hits.length ? actualC - item.amountC : 0 };
 };
 
-/* 12-month forecast. Actuals replace plan for elapsed months. */
+/* 12-month forecast, starting at the current month. Elapsed months are outside
+   the window; the current month blends actuals with plan, later months are plan. */
 export const buildForecast = (state, scenario) => {
   const { recurring, annual, txns, categories, comp, mortgage } = state;
   const sc = scenario || { salaryPct: 0, spendPct: 0, inflationDelta: 0, rateDelta: 0, returnDelta: 0 };
@@ -336,8 +346,6 @@ export const buildForecast = (state, scenario) => {
         if (!modelCats.has(t.categoryId)) { if (t.amountC >= 0) blendIn += t.amountC; else blendOut += t.amountC; }
       });
       usedIn = blendIn; usedOut = blendOut; mode = "blend";
-    } else if (hasActuals) {
-      usedIn = actIn; usedOut = actOut; mode = "actual";
     }
     const net = usedIn + usedOut;
     cum += net;

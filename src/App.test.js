@@ -54,7 +54,52 @@ describe("toC", () => {
   });
 
   it("rounds to the nearest cent", () => {
-    expect(toC("12.345")).toBe(1235);
+    expect(toC("1.2345")).toBe(123);
+    expect(toC("0.005")).toBe(1);
+    // "12.345" is dot-grouped thousands, not a fraction — see the grouping tests below
+    expect(toC("12.345")).toBe(1234500);
+  });
+
+  /* ---- accounting parentheses ---- */
+  it("reads accounting parentheses as a negative", () => {
+    expect(toC("(45.00)")).toBe(-4500);
+    expect(toC("R(1,234.56)")).toBe(-123456);
+    expect(toC("(1.234,56)")).toBe(-123456);
+  });
+
+  it("does not double-negate a signed value inside parentheses", () => {
+    expect(toC("-(45.00)")).toBe(-4500);
+    expect(toC("(-45.00)")).toBe(-4500);
+  });
+
+  it("leaves unparenthesised and unmatched forms alone", () => {
+    expect(toC("-45.00")).toBe(-4500);
+    expect(toC("45.00")).toBe(4500);
+    expect(toC("(45.00")).toBe(4500);
+    expect(toC("45.00)")).toBe(4500);
+    expect(toC("")).toBe(0);
+    expect(toC("abc")).toBe(0);
+    expect(toC("(abc)")).toBe(0);
+  });
+
+  /* ---- dot-grouped thousands ---- */
+  it("reads dot-grouped thousands as grouping, not a decimal point", () => {
+    expect(toC("1.234")).toBe(123400);
+    expect(toC("12.345.678")).toBe(1234567800);
+    expect(toC("-1.234")).toBe(-123400);
+  });
+
+  it("only groups on a non-zero 1-3 digit lead followed by exact groups of three", () => {
+    expect(toC("0.500")).toBe(50);    // leading zero excluded — still a decimal 0.5
+    expect(toC("1.23")).toBe(123);    // two decimals
+    expect(toC("1.2345")).toBe(123);  // four digits
+    expect(toC("1234.5")).toBe(123450);
+  });
+
+  it("lets the European comma rule win over dot grouping", () => {
+    expect(toC("1.234,56")).toBe(123456);
+    expect(toC("1,234.56")).toBe(123456);
+    expect(toC("1.234.567,89")).toBe(123456789);
   });
 
   it("returns 0 for empty and nullish input", () => {
@@ -528,10 +573,28 @@ describe("buildForecast", () => {
     expect(rows[2].varianceC).toBe(0);
   });
 
-  it("does not switch mode for transactions before the current month", () => {
+  it("ignores transactions before the current month — elapsed months are outside the window", () => {
     const s = baseState();
     s.txns = [{ id: "t8", date: "2026-01-05", amountC: -111, categoryId: "c_food" }];
-    expect(modes(buildForecast(s, null))).toEqual(Array(12).fill("plan"));
+    const { rows } = buildForecast(s, null);
+    // the window starts at the current month, so January is never iterated at all
+    expect(rows[0].ym).toBe("2026-03");
+    expect(rows.some((r) => r.ym < "2026-03")).toBe(false);
+    expect(modes({ rows })).toEqual(Array(12).fill("plan"));
+    // a past transaction changes nothing about the forecast
+    expect(rows).toEqual(buildForecast(baseState(), null).rows);
+  });
+
+  it("only ever produces plan and blend modes", () => {
+    const s = baseState();
+    s.txns = [
+      { id: "p1", date: "2026-01-05", amountC: -111, categoryId: "c_food" },
+      { id: "c1", date: "2026-03-05", amountC: -350000, categoryId: "c_food" },
+      { id: "f1", date: "2026-07-05", amountC: -999, categoryId: "c_food" },
+    ];
+    buildForecast(s, null).rows.forEach((r) => {
+      expect(["plan", "blend"]).toContain(r.mode);
+    });
   });
 
   it("does not blend on excluded or transfer-category transactions alone", () => {
