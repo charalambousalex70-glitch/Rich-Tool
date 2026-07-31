@@ -583,38 +583,43 @@ export default function App({ boot = null, onPersist = null }) {
   return (
     <div className="app">
       <style>{THEME_CSS + CSS}</style>
-      <aside className="nav">
+      <nav className="nav" aria-label="Sections">
         <div className="brand">
-          <div className="brand-mark">▚</div>
+          <div className="brand-mark" aria-hidden="true">▚</div>
           <div><div className="brand-name">LEDGERLINE</div><div className="brand-sub">personal finance model</div></div>
         </div>
         {NAV.map(([k, label, ic]) => (
-          <button key={k} className={`nav-item ${page === k ? "on" : ""}`} onClick={() => setPage(k)}>
-            <span className="nav-ic">{ic}</span>{label}
-            {k === "imports" && <span className="nav-badge">{state.batches.length}</span>}
+          <button key={k} className={`nav-item ${page === k ? "on" : ""}`} aria-current={page === k ? "page" : undefined}
+            onClick={() => setPage(k)}>
+            <span className="nav-ic" aria-hidden="true">{ic}</span>{label}
+            {k === "imports" && <span className="nav-badge">{state.batches.length}<span className="sr-only"> statement imports so far</span></span>}
           </button>
         ))}
         {/* "in-memory" was flatly untrue for a signed-in user, whose every edit
             is saved. Say what is true of both cases instead. */}
         <div className="nav-foot">Signed in, every change is saved to your account.<br />In demo mode nothing is saved.</div>
-      </aside>
+      </nav>
 
       <main className="main">
         <header className="topbar">
-          <div className="crumb">{NAV.find((n) => n[0] === page)?.[1]}</div>
+          <h1 className="crumb">{NAV.find((n) => n[0] === page)?.[1]}</h1>
           {showMonthSel && (
             <div className="month-sel">
-              <button onClick={() => setYm(ymAdd(ym, -1))}>‹</button>
+              <button aria-label={`Previous month, ${ymLabel(ymAdd(ym, -1))}`} onClick={() => setYm(ymAdd(ym, -1))}>
+                <span aria-hidden="true">‹</span>
+              </button>
               <span>{ymLabel(ym)}</span>
-              <button onClick={() => setYm(ymAdd(ym, 1))}>›</button>
-              {ym !== nowYm() && <button className="today" onClick={() => setYm(nowYm())}>today</button>}
+              <button aria-label={`Next month, ${ymLabel(ymAdd(ym, 1))}`} onClick={() => setYm(ymAdd(ym, 1))}>
+                <span aria-hidden="true">›</span>
+              </button>
+              {ym !== nowYm() && <button className="today" aria-label={`Back to this month, ${ymLabel(nowYm())}`} onClick={() => setYm(nowYm())}>today</button>}
             </div>
           )}
-          <div className="scen-pill" data-on={state.scenario.enabled}
-            title={state.scenario.enabled
-              ? "A what-if scenario is switched on. Its figures are drawn alongside your own on the Forecast and Long-Term Plan pages — your saved model is not changed."
-              : "Everything shown is your own figures. Set up a what-if under Forecast or Long-Term Plan to compare against them."}>
+          <div className="scen-pill" data-on={state.scenario.enabled}>
             {state.scenario.enabled ? "SCENARIO ON" : "NO SCENARIO"}
+            <Help of="the scenario indicator" text={state.scenario.enabled
+              ? "A what-if scenario is switched on. Its figures are drawn alongside your own on the Forecast and Long-Term Plan pages — your saved model is not changed."
+              : "Everything shown is your own figures. Set up a what-if under Forecast or Long-Term Plan to compare against them."} />
           </div>
         </header>
 
@@ -638,20 +643,59 @@ export default function App({ boot = null, onPersist = null }) {
    ============================================================ */
 const Card = ({ title, right, children, className = "" }) => (
   <section className={`card ${className}`}>
-    {(title || right) && <div className="card-head"><h3>{title}</h3><div>{right}</div></div>}
+    {(title || right) && <div className="card-head"><h2>{title}</h2><div>{right}</div></div>}
     {children}
   </section>
 );
-/* `help` hangs a hover explanation off the label — every stat on this app shows
-   a number whose derivation is invisible, and there is no room to spell it out
-   in a 170px tile. */
-const Help = ({ text }) => <span className="help" title={text}>?</span>;
-const Stat = ({ label, value, sub, tone, onClick, help }) => (
-  <div className={`stat ${onClick ? "click" : ""}`} onClick={onClick}>
-    <div className="stat-label">{label}{help && <Help text={help} />}</div>
-    <div className={`stat-value ${tone || ""}`}>{value}</div>
-    {sub && <div className="stat-sub">{sub}</div>}
-  </div>
+/* `help` hangs an explanation off the label — every stat on this app shows a
+   number whose derivation is invisible, and there is no room to spell it out in
+   a 170px tile. It was a `title`, which only a mouse can reach: a keyboard or
+   touch user got none of it. It is a real disclosure button now, so the text is
+   reachable by Tab + Enter and by tapping, and the panel is ordinary text an
+   assistive technology reads out. The hover `title` stays as a mouse shortcut. */
+const Help = ({ text, of }) => {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="help-wrap">
+      <button type="button" className="help" title={text} aria-expanded={open}
+        aria-label={of ? `Explain ${of}` : "Explain this figure"}
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen((o) => !o); }}
+        onKeyDown={(e) => { if (e.key === "Escape" && open) { e.stopPropagation(); setOpen(false); } }}>?</button>
+      {open && <span className="help-body">{text}</span>}
+    </span>
+  );
+};
+/* A tile that navigates somewhere is a control, and has to say so: it is a real
+   button when — and only when — it was given an onClick. A tile that only shows
+   a figure stays a plain div, so it is never announced as something to press.
+   The `?` sits outside the button: a focusable control cannot be nested inside
+   another one. */
+const Stat = ({ label, value, sub, tone, onClick, help }) => {
+  const body = (
+    <>
+      <span className="stat-label">{label}</span>
+      <span className={`stat-value ${tone || ""}`}>{value}</span>
+      {sub && <span className="stat-sub">{sub}</span>}
+    </>
+  );
+  return (
+    <div className={`stat ${onClick ? "click" : ""}`}>
+      {onClick
+        ? <button type="button" className="stat-hit" onClick={onClick}>{body}</button>
+        : <span className="stat-hit">{body}</span>}
+      {help && <Help text={help} of={label} />}
+    </div>
+  );
+};
+/* Recharts emits a bare <svg> with no name and no text alternative, so a screen
+   reader reader finds nothing at all where the chart is. Name the picture, and
+   put a sentence next to it saying what it shows — pointing at the table with
+   the same figures where the page already has one. */
+const ChartFrame = ({ name, summary, children }) => (
+  <>
+    <div className="chart-frame" role="img" aria-label={name}>{children}</div>
+    <p className="sr-only">{summary}</p>
+  </>
 );
 const Amt = ({ c, cur, zero }) => (
   <span className={`amt ${c > 0 ? "pos" : c < 0 ? "neg" : ""}`}>{zero && c === 0 ? "—" : C(c, cur)}</span>
@@ -660,13 +704,14 @@ const Amt = ({ c, cur, zero }) => (
    silent zero. The wrapper only appears while there is something to say, so a
    valid field lays out exactly as it did before. */
 const withError = (input, err) =>
-  err ? <span className="in-wrap">{input}<span className="in-err">{err}</span></span> : input;
+  err ? <span className="in-wrap">{input}<span className="in-err" role="alert">{err}</span></span> : input;
 
-const NumInput = ({ valueC, onCommit, className = "" }) => {
+const NumInput = ({ valueC, onCommit, className = "", label, disabled }) => {
   const [v, setV] = useState(null);
   const [err, setErr] = useState(null);
   return withError(
     <input className={`num-in ${className} ${err ? "invalid" : ""}`} value={v === null ? (valueC / 100).toFixed(2) : v}
+      aria-label={label} disabled={disabled}
       onChange={(e) => { setV(e.target.value); setErr(null); }}
       onBlur={() => {
         if (v === null) return;
@@ -677,11 +722,12 @@ const NumInput = ({ valueC, onCommit, className = "" }) => {
     err
   );
 };
-const PctInput = ({ value, onCommit, step = 0.1, min, max, validate }) => {
+const PctInput = ({ value, onCommit, step = 0.1, min, max, validate, label, disabled }) => {
   const [v, setV] = useState(null);
   const [err, setErr] = useState(null);
   return withError(
     <input className={`num-in pct ${err ? "invalid" : ""}`} type="number" step={step} min={min} max={max}
+      aria-label={label} disabled={disabled}
       value={v === null ? value : v}
       onChange={(e) => { setV(e.target.value); setErr(null); }}
       onBlur={() => {
@@ -701,12 +747,35 @@ const PctInput = ({ value, onCommit, step = 0.1, min, max, validate }) => {
    library, no new dependency, and the row never moves. */
 const DeleteCell = ({ what, onDelete }) => {
   const [armed, setArmed] = useState(false);
-  if (!armed) return <button className="mini" title={`Delete “${what}”`} onClick={() => setArmed(true)}>✕</button>;
+  const armRef = useRef(null);
+  const confirmRef = useRef(null);
+  const wasArmed = useRef(false);
+  /* Arming used to be a purely visual event: the ✕ was replaced and focus fell
+     back to the body, so a keyboard user lost their place and a screen reader
+     said nothing. Move focus onto the confirmation and announce that the row is
+     armed; put focus back on the ✕ when the answer is "keep". Both wait for the
+     render that creates the button being focused — it does not exist yet at the
+     moment the click is handled. */
+  useEffect(() => {
+    if (armed) { if (confirmRef.current) confirmRef.current.focus(); }
+    else if (wasArmed.current && armRef.current) armRef.current.focus();
+    wasArmed.current = armed;
+  }, [armed]);
   return (
-    <span className="confirm">
-      <span className="confirm-q">Delete “{what}”?</span>
-      <button className="mini danger" onClick={() => { setArmed(false); onDelete(); }}>Delete</button>
-      <button className="mini" onClick={() => setArmed(false)}>Keep</button>
+    <span className="del-cell">
+      {/* Kept mounted so the text swap is a live-region update, not a new region */}
+      <span className="sr-only" role="status">{armed ? `Delete “${what}”? Waiting for confirmation.` : ""}</span>
+      {armed ? (
+        <span className="confirm">
+          <span className="confirm-q">Delete “{what}”?</span>
+          <button ref={confirmRef} className="mini danger" aria-label={`Confirm delete “${what}”`}
+            onClick={() => { setArmed(false); onDelete(); }}>Delete</button>
+          <button className="mini" aria-label={`Keep “${what}”`} onClick={() => setArmed(false)}>Keep</button>
+        </span>
+      ) : (
+        <button ref={armRef} className="mini" title={`Delete “${what}”`} aria-label={`Delete “${what}”`}
+          onClick={() => setArmed(true)}>✕</button>
+      )}
     </span>
   );
 };
@@ -774,7 +843,9 @@ function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut
       </div>
 
       <Card title="12-month cashflow ribbon" className="span2"
-        right={<span className="muted-s" title={`${BASIS_HELP.blend}\n\n${BASIS_HELP.plan}`}>solid bar = actual + planned · pale = planned</span>}>
+        right={<span className="muted-s">solid bar = actual + planned · pale = planned<Help of="the bar shading" text={`${BASIS_HELP.blend}\n\n${BASIS_HELP.plan}`} /></span>}>
+        <ChartFrame name="12-month cashflow ribbon"
+          summary={`A bar for each of the next 12 months showing money in less money out, with a line for the running total. The same figures are listed month by month in the table on the Forecast page. Over the 12 months the running total ends at ${C0(fc.rows[11].cum, cur)}.`}>
         <ResponsiveContainer width="100%" height={210}>
           <ComposedChart data={fc.rows.map((r) => ({ ...r, name: ymShort(r.ym) }))}>
             <CartesianGrid stroke={palette.grid} vertical={false} />
@@ -788,6 +859,7 @@ function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut
             <Line dataKey="cum" name="Cumulative" stroke={palette.line} strokeWidth={2} dot={false} />
           </ComposedChart>
         </ResponsiveContainer>
+        </ChartFrame>
       </Card>
 
       <Card title={`Top spend categories · ${ymShort(ym)}`}>
@@ -795,15 +867,22 @@ function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut
         {catRows.map((r) => (
           <button key={r.id} className="bar-row" onClick={() => goTxns({ category: r.id })}>
             <span>{r.name}</span>
-            <span className="bar-track"><span className="bar-fill" style={{ width: `${Math.min(100, (Math.abs(r.c) / Math.abs(catRows[0].c)) * 100)}%` }} /></span>
+            <span className="bar-track" aria-hidden="true"><span className="bar-fill" style={{ width: `${Math.min(100, (Math.abs(r.c) / Math.abs(catRows[0].c)) * 100)}%` }} /></span>
             <span className="amt neg">{C(r.c, cur)}</span>
+            <span className="sr-only">— show these transactions</span>
           </button>
         ))}
       </Card>
 
       <Card title={`Still pending · ${ymShort(ym)}`} right={<span className="muted-s">{pendingRecurring.length} expected items unmatched</span>}>
         {pendingRecurring.length === 0 && <div className="empty">Every expected recurring item is matched to an actual. Fully reconciled month.</div>}
+        {/* No header row by design — the columns are named in the caption instead,
+            so the table is not four unlabelled columns to a screen reader. */}
         <table className="tbl">
+          <caption className="sr-only">
+            Recurring items expected in {ymLabel(ym)} with no matching transaction yet. Columns: item, the day of
+            the month it is expected, the planned amount, and its status.
+          </caption>
           <tbody>
             {pendingRecurring.map((r) => (
               <tr key={r.id}>
@@ -818,6 +897,8 @@ function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut
       </Card>
 
       <Card title="Net worth trajectory" className="span2">
+        <ChartFrame name="Net worth trajectory by age"
+          summary={`A filled line of projected net worth for every age from ${state.settings.currentAge} to ${state.settings.planningAge}, with a marker at the retirement age of ${state.settings.retirementAge}. The same figures are listed year by year in the Annual projection table on the Long-Term Plan page.`}>
         <ResponsiveContainer width="100%" height={190}>
           <AreaChart data={lt.rows.map((r) => ({ name: r.age, nw: r.netWorthC }))}>
             <CartesianGrid stroke={palette.grid} vertical={false} />
@@ -829,6 +910,7 @@ function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut
             <defs><linearGradient id="nwg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={palette.pos} stopOpacity={0.28} /><stop offset="100%" stopColor={palette.pos} stopOpacity={0.02} /></linearGradient></defs>
           </AreaChart>
         </ResponsiveContainer>
+        </ChartFrame>
       </Card>
     </div>
   );
@@ -851,12 +933,14 @@ function Transactions({ state, update, cur, ym, txnFilter, setTxnFilter, cats, c
     <div className="grid">
       <Card className="span3" title={`Transactions · ${ymLabel(ym)}`} right={
         <div className="filters">
-          <input placeholder="Search description…" value={f.search} onChange={(e) => setTxnFilter({ ...f, search: e.target.value })} />
-          <select value={f.account} onChange={(e) => setTxnFilter({ ...f, account: e.target.value })}>
+          {/* The placeholder was the only label on the search box; it disappears
+              the moment anything is typed, so it never was one. */}
+          <input aria-label="Search descriptions" placeholder="Search description…" value={f.search} onChange={(e) => setTxnFilter({ ...f, search: e.target.value })} />
+          <select aria-label="Filter by account" value={f.account} onChange={(e) => setTxnFilter({ ...f, account: e.target.value })}>
             <option value="all">All accounts</option>
             {state.accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
-          <select value={f.category} onChange={(e) => setTxnFilter({ ...f, category: e.target.value })}>
+          <select aria-label="Filter by category" value={f.category} onChange={(e) => setTxnFilter({ ...f, category: e.target.value })}>
             <option value="all">All categories</option>
             {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
@@ -865,7 +949,7 @@ function Transactions({ state, update, cur, ym, txnFilter, setTxnFilter, cats, c
       }>
         {rows.length === 0 && <div className="empty">No transactions for this month and filter. Use Imports to load a statement, or add one manually below.</div>}
         <table className="tbl">
-          <thead><tr><th>Date</th><th>Description</th><th>Account</th><th>Category</th><th className="r">Amount</th><th>Flags</th><th></th></tr></thead>
+          <thead><tr><th scope="col">Date</th><th scope="col">Description</th><th scope="col">Account</th><th scope="col">Category</th><th scope="col" className="r">Amount</th><th scope="col">Flags</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
           <tbody>
             {rows.map((t) => (
               <tr key={t.id} className={t.excluded ? "dim" : ""}>
@@ -873,7 +957,7 @@ function Transactions({ state, update, cur, ym, txnFilter, setTxnFilter, cats, c
                 <td>{t.desc}</td>
                 <td className="muted-s">{accName(t.accountId)}</td>
                 <td>
-                  <select className="cat-sel" value={t.categoryId} onChange={(e) => setTxn(t.id, { categoryId: e.target.value }, `Recategorised "${t.desc}" → ${catName(e.target.value)}`)}>
+                  <select className="cat-sel" aria-label={`Category for “${t.desc}”`} value={t.categoryId} onChange={(e) => setTxn(t.id, { categoryId: e.target.value }, `Recategorised "${t.desc}" → ${catName(e.target.value)}`)}>
                     {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                 </td>
@@ -884,8 +968,12 @@ function Transactions({ state, update, cur, ym, txnFilter, setTxnFilter, cats, c
                   {t.source === "import" && <span className="chip ghost">import</span>}
                 </td>
                 <td className="r">
-                  <button className="mini" title="Mark as transfer between own accounts" onClick={() => setTxn(t.id, { transfer: !t.transfer }, `${t.transfer ? "Unmarked" : "Marked"} "${t.desc}" as transfer`)}>⇄</button>
-                  <button className="mini" title="Exclude from all analysis" onClick={() => setTxn(t.id, { excluded: !t.excluded }, `${t.excluded ? "Restored" : "Excluded"} "${t.desc}"`)}>{t.excluded ? "↺" : "✕"}</button>
+                  <button className="mini" title="Mark as transfer between own accounts"
+                    aria-label={`${t.transfer ? "Stop treating" : "Treat"} “${t.desc}” as a transfer between your own accounts`}
+                    onClick={() => setTxn(t.id, { transfer: !t.transfer }, `${t.transfer ? "Unmarked" : "Marked"} "${t.desc}" as transfer`)}><span aria-hidden="true">⇄</span></button>
+                  <button className="mini" title="Exclude from all analysis"
+                    aria-label={t.excluded ? `Put “${t.desc}” back into the analysis` : `Leave “${t.desc}” out of all analysis`}
+                    onClick={() => setTxn(t.id, { excluded: !t.excluded }, `${t.excluded ? "Restored" : "Excluded"} "${t.desc}"`)}><span aria-hidden="true">{t.excluded ? "↺" : "✕"}</span></button>
                 </td>
               </tr>
             ))}
@@ -912,14 +1000,15 @@ function AddTxn({ state, update, ym, cats }) {
   const amountBad = d.amount !== "" && !isReadableAmount(d.amount);
   return (
     <div className="add-row">
-      <input type="date" value={d.date} onChange={(e) => setD({ ...d, date: e.target.value })} />
-      <input placeholder="Description" value={d.desc} onChange={(e) => setD({ ...d, desc: e.target.value })} style={{ flex: 1 }} />
-      <select value={accountId} onChange={(e) => setD({ ...d, accountId: e.target.value })}>{state.accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
-      <select value={d.categoryId} onChange={(e) => setD({ ...d, categoryId: e.target.value })}>{cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+      <input type="date" aria-label="Date of the new transaction" value={d.date} onChange={(e) => setD({ ...d, date: e.target.value })} />
+      <input aria-label="Description of the new transaction" placeholder="Description" value={d.desc} onChange={(e) => setD({ ...d, desc: e.target.value })} style={{ flex: 1 }} />
+      <select aria-label="Account for the new transaction" value={accountId} onChange={(e) => setD({ ...d, accountId: e.target.value })}>{state.accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
+      <select aria-label="Category for the new transaction" value={d.categoryId} onChange={(e) => setD({ ...d, categoryId: e.target.value })}>{cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
       <span className="in-wrap">
-        <input className={amountBad ? "invalid" : ""} placeholder="Amount (− = out)" value={d.amount}
+        <input className={amountBad ? "invalid" : ""} aria-label="Amount of the new transaction, a minus sign for money out"
+          placeholder="Amount (− = out)" value={d.amount}
           onChange={(e) => setD({ ...d, amount: e.target.value })} style={{ width: 130 }} />
-        {amountBad && <span className="in-err">Not a number.</span>}
+        {amountBad && <span className="in-err" role="alert">Not a number.</span>}
       </span>
       <button className="btn" disabled={!d.desc.trim() || !isReadableAmount(d.amount)} onClick={() => {
         update((s) => ({ ...s, txns: [...s.txns, { id: uid("txn"), accountId, date: d.date, desc: d.desc, amountC: toC(d.amount), categoryId: d.categoryId, source: "manual" }] }), "manual", `Manual transaction "${d.desc}" ${d.amount}`);
@@ -956,8 +1045,10 @@ function Accounts({ state, update, cur, goTxns, palette }) {
             const diff = r.balance !== undefined && computedAt !== null ? toC(r.balance) - computedAt : null;
             return (
               <Card key={acc.id} title={<span><span className="acc-type">{label}</span>{acc.name}</span>}
-                right={<button className="mini" onClick={() => goTxns({ account: acc.id })}>view txns →</button>}>
+                right={<button className="mini" aria-label={`View transactions for ${acc.name}`} onClick={() => goTxns({ account: acc.id })}>view txns →</button>}>
                 <div className="acc-bal"><Amt c={bal} cur={cur} /></div>
+                <ChartFrame name={`Balance of ${acc.name} over the last nine months`}
+                  summary={`A line of the ${acc.name} balance at the end of each of the last nine months, from ${C0(history(acc)[0].bal, cur)} in ${history(acc)[0].name} to ${C0(bal, cur)} now.`}>
                 <ResponsiveContainer width="100%" height={90}>
                   <AreaChart data={history(acc)}>
                     <XAxis dataKey="name" hide /><YAxis hide domain={["auto", "auto"]} />
@@ -965,14 +1056,15 @@ function Accounts({ state, update, cur, goTxns, palette }) {
                     <Area dataKey="bal" name="Balance" stroke={bal >= 0 ? palette.pos : palette.neg} fill="none" strokeWidth={1.5} />
                   </AreaChart>
                 </ResponsiveContainer>
+                </ChartFrame>
                 {isSnap ? (
                   <div className="recon">
                     <div className="muted-s">Enter the balance yourself</div>
                     <div className="muted-s">This account's balance is whatever you last typed in here — it does not move on its own between updates.</div>
                     <div className="recon-row">
-                      <input type="date" value={(snap[acc.id] || {}).date || todayISO()} onChange={(e) => setSnap({ ...snap, [acc.id]: { ...(snap[acc.id] || {}), date: e.target.value } })} />
-                      <input placeholder="Balance" value={(snap[acc.id] || {}).balance || ""} onChange={(e) => setSnap({ ...snap, [acc.id]: { ...(snap[acc.id] || {}), balance: e.target.value } })} />
-                      <button className="btn" disabled={!(snap[acc.id] || {}).balance} onClick={() => {
+                      <input type="date" aria-label={`Date of the balance you are entering for ${acc.name}`} value={(snap[acc.id] || {}).date || todayISO()} onChange={(e) => setSnap({ ...snap, [acc.id]: { ...(snap[acc.id] || {}), date: e.target.value } })} />
+                      <input aria-label={`Balance of ${acc.name} on that date`} placeholder="Balance" value={(snap[acc.id] || {}).balance || ""} onChange={(e) => setSnap({ ...snap, [acc.id]: { ...(snap[acc.id] || {}), balance: e.target.value } })} />
+                      <button className="btn" aria-label={`Save this balance for ${acc.name}`} disabled={!(snap[acc.id] || {}).balance} onClick={() => {
                         const sv = snap[acc.id];
                         update((s) => ({ ...s, snapshots: [...s.snapshots, { id: uid("snap"), accountId: acc.id, date: sv.date || todayISO(), balanceC: toC(sv.balance) }] }), "snapshot", `Snapshot ${acc.name} = ${sv.balance}`);
                         setSnap({ ...snap, [acc.id]: {} });
@@ -983,11 +1075,11 @@ function Accounts({ state, update, cur, goTxns, palette }) {
                   <div className="recon">
                     <div className="muted-s">Reconcile against statement closing balance</div>
                     <div className="recon-row">
-                      <input type="date" value={r.date || ""} onChange={(e) => setRecon({ ...recon, [acc.id]: { ...r, date: e.target.value } })} />
-                      <input placeholder="Statement balance" value={r.balance || ""} onChange={(e) => setRecon({ ...recon, [acc.id]: { ...r, balance: e.target.value } })} />
+                      <input type="date" aria-label={`Statement closing date for ${acc.name}`} value={r.date || ""} onChange={(e) => setRecon({ ...recon, [acc.id]: { ...r, date: e.target.value } })} />
+                      <input aria-label={`Statement closing balance for ${acc.name}`} placeholder="Statement balance" value={r.balance || ""} onChange={(e) => setRecon({ ...recon, [acc.id]: { ...r, balance: e.target.value } })} />
                     </div>
                     {diff !== null && (
-                      <div className={`recon-result ${diff === 0 ? "ok" : "bad"}`}>
+                      <div className={`recon-result ${diff === 0 ? "ok" : "bad"}`} role="status">
                         {diff === 0 ? "✓ Reconciled — app balance matches the statement." :
                           <>App shows {C(computedAt, cur)} at {r.date}. Difference of <b>{C(diff, cur)}</b> — likely missing or duplicated transactions.</>}
                       </div>
@@ -1021,21 +1113,23 @@ function Recurring({ state, update, cur, ym, cats }) {
       </div>
       <Card className="span3" title="Regular monthly income & expenses" right={<span className="muted-s">edits feed the forecast and long-term plan immediately</span>}>
         <table className="tbl">
-          <thead><tr><th>Item</th><th>Category</th><th>Expected day</th><th className="r">Amount / month</th><th>This month ({ymShort(ym)})</th><th className="r">Variance<Help text={recurringVarianceHelp(cur)} /></th><th></th></tr></thead>
+          <thead><tr><th scope="col">Item</th><th scope="col">Category</th><th scope="col">Expected day</th><th scope="col" className="r">Amount / month</th>
+            <th scope="col">This month ({ymShort(ym)})<Help of="the this-month column" text="What actually went through this month. “actual” means the app found real transactions matching this item, and the figure shown is their total, not the planned amount. “pending” means it has found none yet." /></th>
+            <th scope="col" className="r">Variance<Help of="the variance column" text={recurringVarianceHelp(cur)} /></th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
           <tbody>
             {state.recurring.map((r) => {
               const m = matchRecurring(r, state.txns, ym, cats);
               const isTransfer = (cats.find((c) => c.id === r.categoryId) || {}).kind === "transfer";
               return (
                 <tr key={r.id}>
-                  <td><input className="cell-in" value={r.name} onChange={(e) => update((s) => ({ ...s, recurring: s.recurring.map((x) => x.id === r.id ? { ...x, name: e.target.value } : x) }))} /></td>
+                  <td><input className="cell-in" aria-label="Name of this recurring item" value={r.name} onChange={(e) => update((s) => ({ ...s, recurring: s.recurring.map((x) => x.id === r.id ? { ...x, name: e.target.value } : x) }))} /></td>
                   <td>
-                    <select className="cat-sel" value={r.categoryId} onChange={(e) => update((s) => ({ ...s, recurring: s.recurring.map((x) => x.id === r.id ? { ...x, categoryId: e.target.value } : x) }), "edit", `Recurring "${r.name}" category changed`)}>
+                    <select className="cat-sel" aria-label={`Category for “${r.name}”`} value={r.categoryId} onChange={(e) => update((s) => ({ ...s, recurring: s.recurring.map((x) => x.id === r.id ? { ...x, categoryId: e.target.value } : x) }), "edit", `Recurring "${r.name}" category changed`)}>
                       {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                     </select>
                   </td>
-                  <td><input className="cell-in day" type="number" min="1" max="31" value={r.day} onChange={(e) => update((s) => ({ ...s, recurring: s.recurring.map((x) => x.id === r.id ? { ...x, day: +e.target.value } : x) }))} /></td>
-                  <td className="r"><NumInput valueC={r.amountC} onCommit={(c) => update((s) => ({ ...s, recurring: s.recurring.map((x) => x.id === r.id ? { ...x, amountC: c } : x) }), "edit", `Recurring "${r.name}" amount → ${C(c, cur)}`)} /></td>
+                  <td><input className="cell-in day" aria-label={`Day of the month “${r.name}” is expected`} type="number" min="1" max="31" value={r.day} onChange={(e) => update((s) => ({ ...s, recurring: s.recurring.map((x) => x.id === r.id ? { ...x, day: +e.target.value } : x) }))} /></td>
+                  <td className="r"><NumInput label={`Amount per month for “${r.name}”`} valueC={r.amountC} onCommit={(c) => update((s) => ({ ...s, recurring: s.recurring.map((x) => x.id === r.id ? { ...x, amountC: c } : x) }), "edit", `Recurring "${r.name}" amount → ${C(c, cur)}`)} /></td>
                   <td>{isTransfer ? <span className="chip transfer">transfer</span> : m.paid ? <span className="chip ok" title="Matched to real transactions in this month — this is what actually went through, not the planned amount.">actual {C(m.actualC, cur)}</span> : <span className="chip pending">pending</span>}</td>
                   <td className="r">{m.paid && !isTransfer ? <span className={`amt ${m.material ? "warn" : "muted-s"}`} title={recurringVarianceHelp(cur)}>{m.varianceC === 0 ? "on plan" : C(m.varianceC, cur)}{m.material ? " ⚠" : ""}</span> : "—"}</td>
                   <td className="r"><DeleteCell what={r.name} onDelete={() => update((s) => ({ ...s, recurring: s.recurring.filter((x) => x.id !== r.id) }), "edit", `Removed recurring item "${r.name}"`)} /></td>
@@ -1080,18 +1174,21 @@ function Annual({ state, update, cur, ym, cats, goTxns }) {
       </Card>
       <Card className="span3" title="Annual & irregular expenses" right={<span className="muted-s">each amount grows by its annual increase, every year of the forecast</span>}>
         <table className="tbl">
-          <thead><tr><th>Item</th><th>Category</th><th>Month</th><th className="r">Amount</th><th>Annual increase %<Help text="How much this bill goes up each year. Applied on top of the amount for every year the forecast and the long-term plan run — 0 keeps it flat." /></th><th>Status · {year}</th><th className="r">Variance<Help text="The gap between the amount you planned for and what actually went through." /></th><th></th></tr></thead>
+          <thead><tr><th scope="col">Item</th><th scope="col">Category</th><th scope="col">Month</th><th scope="col" className="r">Amount</th>
+            <th scope="col">Annual increase %<Help of="the annual increase column" text="How much this bill goes up each year. Applied on top of the amount for every year the forecast and the long-term plan run — 0 keeps it flat." /></th>
+            <th scope="col">Status · {year}</th>
+            <th scope="col" className="r">Variance<Help of="the variance column" text="The gap between the amount you planned for and what actually went through." /></th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
           <tbody>
             {state.annual.map((a) => {
               const m = matchAnnual(a, state.txns, year);
               return (
                 <tr key={a.id}>
-                  <td><input className="cell-in" value={a.name} onChange={(e) => update((s) => ({ ...s, annual: s.annual.map((x) => x.id === a.id ? { ...x, name: e.target.value } : x) }))} /></td>
-                  <td><select className="cat-sel" value={a.categoryId} onChange={(e) => update((s) => ({ ...s, annual: s.annual.map((x) => x.id === a.id ? { ...x, categoryId: e.target.value } : x) }))}>{cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></td>
-                  <td><select className="cat-sel" value={a.month} onChange={(e) => update((s) => ({ ...s, annual: s.annual.map((x) => x.id === a.id ? { ...x, month: +e.target.value } : x) }))}>{MONTHS.map((mn, i) => <option key={mn} value={i + 1}>{mn}</option>)}</select></td>
-                  <td className="r"><NumInput valueC={a.amountC} onCommit={(c) => update((s) => ({ ...s, annual: s.annual.map((x) => x.id === a.id ? { ...x, amountC: c } : x) }), "edit", `Annual "${a.name}" amount → ${C(c, cur)}`)} /></td>
-                  <td><PctInput value={a.escalationPct} onCommit={(v) => update((s) => ({ ...s, annual: s.annual.map((x) => x.id === a.id ? { ...x, escalationPct: v } : x) }))} /></td>
-                  <td>{m.paid ? <button className="chip ok click" onClick={() => goTxns({ category: a.categoryId })}>paid {C(m.actualC, cur)}</button> : <span className="chip pending">due {MONTHS[a.month - 1]}</span>}</td>
+                  <td><input className="cell-in" aria-label="Name of this annual item" value={a.name} onChange={(e) => update((s) => ({ ...s, annual: s.annual.map((x) => x.id === a.id ? { ...x, name: e.target.value } : x) }))} /></td>
+                  <td><select className="cat-sel" aria-label={`Category for “${a.name}”`} value={a.categoryId} onChange={(e) => update((s) => ({ ...s, annual: s.annual.map((x) => x.id === a.id ? { ...x, categoryId: e.target.value } : x) }))}>{cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></td>
+                  <td><select className="cat-sel" aria-label={`Month “${a.name}” falls due`} value={a.month} onChange={(e) => update((s) => ({ ...s, annual: s.annual.map((x) => x.id === a.id ? { ...x, month: +e.target.value } : x) }))}>{MONTHS.map((mn, i) => <option key={mn} value={i + 1}>{mn}</option>)}</select></td>
+                  <td className="r"><NumInput label={`Amount for “${a.name}”`} valueC={a.amountC} onCommit={(c) => update((s) => ({ ...s, annual: s.annual.map((x) => x.id === a.id ? { ...x, amountC: c } : x) }), "edit", `Annual "${a.name}" amount → ${C(c, cur)}`)} /></td>
+                  <td><PctInput label={`Annual increase percent for “${a.name}”`} value={a.escalationPct} onCommit={(v) => update((s) => ({ ...s, annual: s.annual.map((x) => x.id === a.id ? { ...x, escalationPct: v } : x) }))} /></td>
+                  <td>{m.paid ? <button className="chip ok click" aria-label={`“${a.name}” paid, ${C(m.actualC, cur)} — show these transactions`} onClick={() => goTxns({ category: a.categoryId })}>paid {C(m.actualC, cur)}</button> : <span className="chip pending">due {MONTHS[a.month - 1]}</span>}</td>
                   <td className="r">{m.paid ? <Amt c={m.varianceC} cur={cur} zero /> : "—"}</td>
                   <td className="r"><DeleteCell what={a.name} onDelete={() => update((s) => ({ ...s, annual: s.annual.filter((x) => x.id !== a.id) }), "edit", `Removed annual item "${a.name}"`)} /></td>
                 </tr>
@@ -1118,7 +1215,7 @@ function Compensation({ state, update, cur, palette }) {
         <div className="form">
           <label>Monthly salary (net)<NumInput valueC={comp.salaryMonthlyC} onCommit={(c) => setComp({ salaryMonthlyC: c }, `Salary → ${C(c, cur)}`)} /></label>
           <label>Bonus target (% of annual salary)<PctInput value={comp.bonusTargetPct} onCommit={(v) => setComp({ bonusTargetPct: v }, `Bonus target → ${v}%`)} /></label>
-          <label>Bonus paid in<select className="cat-sel" value={comp.bonusMonth} onChange={(e) => setComp({ bonusMonth: +e.target.value }, "Bonus month changed")}>{MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}</select></label>
+          <label>Bonus paid in<select className="cat-sel" aria-label="Month the bonus is paid in" value={comp.bonusMonth} onChange={(e) => setComp({ bonusMonth: +e.target.value }, "Bonus month changed")}>{MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}</select></label>
           <label>Salary growth %/yr<PctInput value={comp.salaryGrowthPct} onCommit={(v) => setComp({ salaryGrowthPct: v }, `Salary growth → ${v}%`)} /></label>
         </div>
         <div className="callout">Annual package at target: <b>{C0(Math.round(comp.salaryMonthlyC * 12 * (1 + comp.bonusTargetPct / 100)), cur)}</b> — flows into the forecast (bonus in {MONTHS[comp.bonusMonth - 1]}) and the long-term plan (growth until retirement).</div>
@@ -1128,13 +1225,17 @@ function Compensation({ state, update, cur, palette }) {
           <label>Outstanding balance<NumInput valueC={mortgage.balanceC} onCommit={(c) => setMort({ balanceC: c }, `Mortgage balance → ${C(c, cur)}`)} /></label>
           <label>Interest rate %<PctInput value={mortgage.ratePct} onCommit={(v) => setMort({ ratePct: v }, `Mortgage rate → ${v}%`)} step={0.05} /></label>
           <label>Remaining term (months)<PctInput value={mortgage.termMonths} onCommit={(v) => setMort({ termMonths: Math.round(v) }, `Mortgage term → ${v} months`)} step={1} min={1} max={TERM_MONTHS_MAX} validate={termMonthsError} /></label>
-          <label>Fixed rate expires<input type="month" className="cell-in" value={mortgage.fixedExpiry} onChange={(e) => setMort({ fixedExpiry: e.target.value }, "Fixed-rate expiry changed")} /></label>
-          <label title="If your lender's payment differs from the textbook figure — because you overpay, or the term was reset — type what you actually pay and the app will use it everywhere. Leave it at 0 and the app works the payment out from the balance, rate and term above.">Monthly payment you actually make (leave 0 to work it out)<NumInput valueC={mortgage.paymentOverrideC || 0} onCommit={(c) => setMort({ paymentOverrideC: c || null }, `Mortgage payment override → ${C(c, cur)}`)} /></label>
+          <label>Fixed rate expires<input type="month" className="cell-in" aria-label="Month the fixed rate expires" value={mortgage.fixedExpiry} onChange={(e) => setMort({ fixedExpiry: e.target.value }, "Fixed-rate expiry changed")} /></label>
+          <label><span className="l-txt">Monthly payment you actually make (leave 0 to work it out)
+            <Help of="the payment you actually make" text="If your lender's payment differs from the textbook figure — because you overpay, or the term was reset — type what you actually pay and the app will use it everywhere. Leave it at 0 and the app works the payment out from the balance, rate and term above." /></span>
+            <NumInput label="Monthly mortgage payment you actually make" valueC={mortgage.paymentOverrideC || 0} onCommit={(c) => setMort({ paymentOverrideC: c || null }, `Mortgage payment override → ${C(c, cur)}`)} /></label>
           <label>Property value (estimate)<NumInput valueC={mortgage.propertyValueC || 0} onCommit={(c) => setMort({ propertyValueC: c }, `Property value → ${C(c, cur)}`)} /></label>
         </div>
         <div className="callout">Payment used: <b>{C(am.paymentC, cur)}/mo</b> · projected payoff <b>{payoffYm === "—" ? "—" : ymLabel(payoffYm)}</b> · fixed rate ends <b>{ymLabel(mortgage.fixedExpiry)}</b> — after which the forecast scenario rate change applies.</div>
       </Card>
       <Card className="span2" title="Amortisation — balance & interest vs principal (annual view)">
+        <ChartFrame name="Mortgage amortisation by year"
+          summary={`For each year until the mortgage is paid off, a stacked bar of the interest and the principal paid that year, and a line of the balance still outstanding. The balance starts at ${C0(mortgage.balanceC, cur)} and the payment used is ${C(am.paymentC, cur)} a month; projected payoff ${payoffYm === "—" ? "not reached" : ymLabel(payoffYm)}.`}>
         <ResponsiveContainer width="100%" height={230}>
           <ComposedChart data={yearMarks.map((r, i) => ({ name: r.ym.slice(0, 4), bal: r.balanceC, int: am.rows.slice(i * 12, i * 12 + 12).reduce((s, x) => s + x.interestC, 0), prin: am.rows.slice(i * 12, i * 12 + 12).reduce((s, x) => s + x.principalC, 0) }))}>
             <CartesianGrid stroke={palette.grid} vertical={false} />
@@ -1146,6 +1247,7 @@ function Compensation({ state, update, cur, palette }) {
             <Line dataKey="bal" name="Balance" stroke={palette.line} strokeWidth={2} dot={false} />
           </ComposedChart>
         </ResponsiveContainer>
+        </ChartFrame>
       </Card>
     </div>
   );
@@ -1159,16 +1261,20 @@ function ScenarioPanel({ state, update }) {
     <Card title="Scenario overlay" className="span3 scen" right={
       <label className="switch"><input type="checkbox" checked={sc.enabled} onChange={(e) => set({ enabled: e.target.checked })} /><span>{sc.enabled ? "On — base case preserved" : "Off"}</span></label>
     }>
+      {/* The greyed-out look came from opacity and pointer-events, which stop a
+          mouse and nothing else: the five fields stayed in the tab order and
+          stayed editable from the keyboard. They are really disabled now, so
+          what the panel looks like and what it does are the same thing. */}
       <div className="scen-grid" data-off={!sc.enabled}>
-        <label>Salary / bonus change %<PctInput value={sc.salaryPct} onCommit={(v) => set({ salaryPct: v })} step={0.5} /></label>
-        <label>Spending adjustment %<PctInput value={sc.spendPct} onCommit={(v) => set({ spendPct: v })} step={0.5} /></label>
+        <label>Salary / bonus change %<PctInput disabled={!sc.enabled} value={sc.salaryPct} onCommit={(v) => set({ salaryPct: v })} step={0.5} /></label>
+        <label>Spending adjustment %<PctInput disabled={!sc.enabled} value={sc.spendPct} onCommit={(v) => set({ spendPct: v })} step={0.5} /></label>
         {/* These three are added to the rates already in the model, not used in
             place of them — which "delta" never said out loud. */}
-        <label>Inflation change %/yr<PctInput value={sc.inflationDelta} onCommit={(v) => set({ inflationDelta: v })} step={0.25} />
+        <label>Inflation change %/yr<PctInput disabled={!sc.enabled} value={sc.inflationDelta} onCommit={(v) => set({ inflationDelta: v })} step={0.25} />
           <span className="scen-hint">added to the {st.inflationPct}% in Settings, not instead of it</span></label>
-        <label>Mortgage rate change %<PctInput value={sc.rateDelta} onCommit={(v) => set({ rateDelta: v })} step={0.25} />
+        <label>Mortgage rate change %<PctInput disabled={!sc.enabled} value={sc.rateDelta} onCommit={(v) => set({ rateDelta: v })} step={0.25} />
           <span className="scen-hint">added to the {state.mortgage.ratePct}% on your mortgage</span></label>
-        <label>Investment return change %/yr<PctInput value={sc.returnDelta} onCommit={(v) => set({ returnDelta: v })} step={0.25} />
+        <label>Investment return change %/yr<PctInput disabled={!sc.enabled} value={sc.returnDelta} onCommit={(v) => set({ returnDelta: v })} step={0.25} />
           <span className="scen-hint">added to both the {st.investReturnPct}% investment and {st.cryptoReturnPct}% crypto returns in Settings</span></label>
       </div>
       <div className="muted-s">The overlay is drawn alongside the base case; it never overwrites your model.</div>
@@ -1182,6 +1288,8 @@ function Forecast({ state, update, cur, fc, fcScen, palette }) {
     <div className="grid">
       <ScenarioPanel state={state} update={update} />
       <Card className="span3" title="Cumulative 12-month cashflow">
+        <ChartFrame name="Cumulative 12-month cashflow"
+          summary={`A line of the running total of monthly net cashflow over the next 12 months${fcScen ? ", with a second dashed line for the scenario overlay" : ""}. Every figure in it is listed month by month in the Monthly detail table below. The base case runs from ${C0(fc.rows[0].cum, cur)} after the first month to ${C0(fc.rows[11].cum, cur)} after the twelfth.`}>
         <ResponsiveContainer width="100%" height={230}>
           <LineChart data={chart}>
             <CartesianGrid stroke={palette.grid} vertical={false} />
@@ -1193,11 +1301,16 @@ function Forecast({ state, update, cur, fc, fcScen, palette }) {
             {fcScen && <Line dataKey="scen" name="Scenario" stroke={palette.neg} strokeWidth={2} strokeDasharray="6 3" dot={false} />}
           </LineChart>
         </ResponsiveContainer>
+        </ChartFrame>
       </Card>
       <Card className="span3" title="Monthly detail" right={<span className="muted-s">a month stops being pure plan as soon as its transactions are matched</span>}>
         {basisLegend}
         <table className="tbl">
-          <thead><tr><th>Month</th><th>Figures are</th><th className="r">Income</th><th className="r">Outgoings</th><th className="r">Net</th><th className="r">vs plan<Help text={forecastVarianceHelp} /></th><th className="r">Cumulative</th>{fcScen && <th className="r">Scenario net</th>}</tr></thead>
+          <thead><tr><th scope="col">Month</th>
+            <th scope="col">Figures are<Help of="the figures-are column" text={`${BASIS_HELP.blend}\n\n${BASIS_HELP.plan}`} /></th>
+            <th scope="col" className="r">Income</th><th scope="col" className="r">Outgoings</th><th scope="col" className="r">Net</th>
+            <th scope="col" className="r">vs plan<Help of="the vs-plan column" text={forecastVarianceHelp} /></th>
+            <th scope="col" className="r">Cumulative</th>{fcScen && <th scope="col" className="r">Scenario net</th>}</tr></thead>
           <tbody>
             {fc.rows.map((r, i) => (
               <tr key={r.ym} className={r.mode !== "plan" ? "hl" : ""}>
@@ -1249,6 +1362,8 @@ function LongTerm({ state, update, cur, lt, ltScen, palette }) {
       {lt.depletionAge && <div className="banner warn span3">⚠ Retirement depletion warning: on current assumptions your liquid assets are exhausted at age {lt.depletionAge}, before your planning age of {st.planningAge}. Consider higher contributions, later retirement, or lower spend — test it with the scenario overlay.</div>}
       <ScenarioPanel state={state} update={update} />
       <Card className="span3" title="Assets vs liabilities to planning age" right={<span className="muted-s">starts from your balances today · everything after is projected</span>}>
+        <ChartFrame name="Assets and liabilities from now to the planning age"
+          summary={`Stacked bands of projected cash, investments, crypto and property, with the mortgage below the line, for every age from ${st.currentAge} to ${st.planningAge}, and a line for net worth${ltScen ? " plus a dashed line for the scenario overlay" : ""}. Every figure in it is listed year by year in the Annual projection table below. Net worth goes from ${C0(lt.rows[0].netWorthC, cur)} at age ${lt.rows[0].age} to ${C0(lt.rows[lt.rows.length - 1].netWorthC, cur)} at age ${lt.rows[lt.rows.length - 1].age}.`}>
         <ResponsiveContainer width="100%" height={260}>
           <ComposedChart data={chart}>
             <CartesianGrid stroke={palette.grid} vertical={false} />
@@ -1265,15 +1380,16 @@ function LongTerm({ state, update, cur, lt, ltScen, palette }) {
             {ltScen && <Line dataKey="scen" name="Net worth (scenario)" stroke={palette.neg} strokeWidth={2} strokeDasharray="6 3" dot={false} />}
           </ComposedChart>
         </ResponsiveContainer>
+        </ChartFrame>
       </Card>
       <Card className="span3" title="Annual projection" right={
-        <label className="muted-s">Planning age <PctInput value={st.planningAge} step={1} min={AGE_MIN} max={AGE_MAX}
+        <label className="muted-s">Planning age <PctInput label="Planning age — the last age the plan draws" value={st.planningAge} step={1} min={AGE_MIN} max={AGE_MAX}
           validate={(v) => ageError("planningAge", v, st)}
           onCommit={(v) => update((s) => ({ ...s, settings: { ...s.settings, planningAge: Math.round(v) } }), "edit", `Planning age → ${v}`)} /></label>
       }>
         <div className="scroll-y">
           <table className="tbl">
-            <thead><tr><th>Year</th><th>Age</th><th></th><th className="r">Income</th><th className="r">Spend</th><th className="r">Net</th><th className="r">Cash</th><th className="r">Investments</th><th className="r">Property</th><th className="r">Mortgage</th><th className="r">Net worth</th></tr></thead>
+            <thead><tr><th scope="col">Year</th><th scope="col">Age</th><th scope="col"><span className="sr-only">Retired</span></th><th scope="col" className="r">Income</th><th scope="col" className="r">Spend</th><th scope="col" className="r">Net</th><th scope="col" className="r">Cash</th><th scope="col" className="r">Investments</th><th scope="col" className="r">Property</th><th scope="col" className="r">Mortgage</th><th scope="col" className="r">Net worth</th></tr></thead>
             <tbody>
               {lt.rows.map((r) => (
                 <tr key={r.age} className={r.age === st.retirementAge ? "hl" : ""}>
@@ -1449,33 +1565,43 @@ function Imports({ state, update, cur, cats, catName, accName }) {
         <>
           <Card className="span2" title="Upload a statement export">
             {noAccounts && <div className="banner warn">This model has no accounts, so there is nowhere for imported transactions to land. Importing is switched off until it has one.</div>}
-            <div className={`drop ${noAccounts ? "off" : ""}`} onClick={() => { if (!noAccounts) fileRef.current.click(); }}
+            {/* Importing a statement is how data gets into this app, and there
+                was no keyboard route to it at all: a <div onClick> over an
+                <input type="file" hidden>, neither of which a Tab key can
+                reach. The drop zone is a real button now — Tab to it, press
+                Enter or Space, and the file picker opens. Drag-and-drop still
+                works on it. The input keeps the file, but is only ever driven
+                by that button, so it is out of the tab order and out of the
+                accessibility tree rather than being a second, silent stop. */}
+            <button type="button" className={`drop ${noAccounts ? "off" : ""}`} disabled={noAccounts}
+              onClick={() => fileRef.current.click()}
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => { e.preventDefault(); if (!noAccounts && e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); }}>
-              <div className="drop-ic">⇪</div>
-              <div>Drop a bank / credit-card / investment export here, or click to browse</div>
-              <div className="muted-s">CSV · XLSX · OFX/QFX &nbsp;·&nbsp; <span className="chip warn">PDF — experimental</span></div>
-              <input ref={fileRef} type="file" hidden accept=".csv,.xlsx,.xls,.ofx,.qfx,.pdf,.txt" onChange={(e) => e.target.files[0] && handleFile(e.target.files[0])} />
-            </div>
+              <span className="drop-ic" aria-hidden="true">⇪</span>
+              <span>Drop a bank / credit-card / investment export here, or press to choose a file</span>
+              <span className="muted-s">CSV · XLSX · OFX/QFX &nbsp;·&nbsp; <span className="chip warn">PDF — experimental</span></span>
+            </button>
+            <input ref={fileRef} type="file" className="file-proxy" tabIndex={-1} aria-hidden="true"
+              accept=".csv,.xlsx,.xls,.ofx,.qfx,.pdf,.txt" onChange={(e) => e.target.files[0] && handleFile(e.target.files[0])} />
             <div className="form" style={{ marginTop: 12 }}>
               <label>Import into account
-                <select className="cat-sel" value={map.accountId} disabled={noAccounts} onChange={(e) => setMap({ ...map, accountId: e.target.value })}>
+                <select className="cat-sel" aria-label="Account the imported transactions land in" value={map.accountId} disabled={noAccounts} onChange={(e) => setMap({ ...map, accountId: e.target.value })}>
                   {noAccounts ? <option value="">No accounts</option> : state.accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
                 </select>
               </label>
             </div>
-            {err && <div className="banner warn">{err}</div>}
+            {err && <div className="banner warn" role="alert">{err}</div>}
             <p className="muted">No bank connections, no stored credentials — you stay in control of what enters the model. Nothing is saved until you commit on the review screen.</p>
           </Card>
           <Card title="Merchant rules" right={<span className="muted-s">drive auto-categorisation</span>}>
             <div className="scroll-y" style={{ maxHeight: 260 }}>
               <table className="tbl">
-                <thead><tr><th>If description contains</th><th>Categorise as</th><th></th></tr></thead>
+                <thead><tr><th scope="col">If description contains</th><th scope="col">Categorise as</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
                 <tbody>
                   {state.rules.map((r) => (
                     <tr key={r.id}>
-                      <td><input className="cell-in mono" value={r.pattern} onChange={(e) => update((s) => ({ ...s, rules: s.rules.map((x) => x.id === r.id ? { ...x, pattern: e.target.value } : x) }))} /></td>
-                      <td><select className="cat-sel" value={r.categoryId} onChange={(e) => update((s) => ({ ...s, rules: s.rules.map((x) => x.id === r.id ? { ...x, categoryId: e.target.value } : x) }), "rule", `Rule "${r.pattern}" → ${catName(e.target.value)}`)}>{cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></td>
+                      <td><input className="cell-in mono" aria-label="Text this rule looks for in a description" value={r.pattern} onChange={(e) => update((s) => ({ ...s, rules: s.rules.map((x) => x.id === r.id ? { ...x, pattern: e.target.value } : x) }))} /></td>
+                      <td><select className="cat-sel" aria-label={`Category for descriptions containing “${r.pattern}”`} value={r.categoryId} onChange={(e) => update((s) => ({ ...s, rules: s.rules.map((x) => x.id === r.id ? { ...x, categoryId: e.target.value } : x) }), "rule", `Rule "${r.pattern}" → ${catName(e.target.value)}`)}>{cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></td>
                       <td><DeleteCell what={r.pattern} onDelete={() => update((s) => ({ ...s, rules: s.rules.filter((x) => x.id !== r.id) }), "rule", `Deleted rule "${r.pattern}"`)} /></td>
                     </tr>
                   ))}
@@ -1486,7 +1612,7 @@ function Imports({ state, update, cur, cats, catName, accName }) {
           </Card>
           <Card className="span3" title="Import history">
             <table className="tbl">
-              <thead><tr><th>When</th><th>File</th><th className="r">Transactions</th><th>Accounts</th></tr></thead>
+              <thead><tr><th scope="col">When</th><th scope="col">File</th><th scope="col" className="r">Transactions</th><th scope="col">Accounts</th></tr></thead>
               <tbody>
                 {state.batches.map((b) => (
                   <tr key={b.id}><td className="mono">{b.when}</td><td>{b.filename}</td><td className="r mono">{b.count}</td><td className="muted-s">{b.accountIds.map(accName).join(", ")}</td></tr>
@@ -1504,8 +1630,8 @@ function Imports({ state, update, cur, cats, catName, accName }) {
             <label>Description column<select className="cat-sel" value={map.desc} onChange={(e) => setMap({ ...map, desc: e.target.value })}><option value="">—</option>{raw.headers.map((h) => <option key={h}>{h}</option>)}</select></label>
             {/* Option text has to stay inside .cat-sel's 175px, so the fuller
                 wording lives on the label rather than clipping in the box. */}
-            <label title="How your export writes amounts: one column where money out is a minus, or two columns — one for money out, one for money in.">Amount layout
-              <select className="cat-sel" value={map.mode} onChange={(e) => setMap({ ...map, mode: e.target.value })}>
+            <label><span className="l-txt">Amount layout<Help of="the amount layout" text="How your export writes amounts: one column where money out is a minus, or two columns — one for money out, one for money in." /></span>
+              <select className="cat-sel" aria-label="Amount layout in your export" value={map.mode} onChange={(e) => setMap({ ...map, mode: e.target.value })}>
                 <option value="single">One amount column</option>
                 <option value="split">Separate debit / credit columns</option>
               </select>
@@ -1524,7 +1650,7 @@ function Imports({ state, update, cur, cats, catName, accName }) {
           </div>
           <div className="muted-s" style={{ margin: "10px 0 4px" }}>Preview (first 5 rows as they will be interpreted)</div>
           <table className="tbl">
-            <thead><tr><th>Date</th><th>Description</th><th className="r">Amount</th></tr></thead>
+            <thead><tr><th scope="col">Date</th><th scope="col">Description</th><th scope="col" className="r">Amount</th></tr></thead>
             <tbody>
               {raw.rows.slice(0, 5).map((r, i) => {
                 const date = parseDateAny(r[map.date], state.settings.dayFirstDates);
@@ -1533,7 +1659,7 @@ function Imports({ state, update, cur, cats, catName, accName }) {
               })}
             </tbody>
           </table>
-          {err && <div className="banner warn">{err}</div>}
+          {err && <div className="banner warn" role="alert">{err}</div>}
           <div className="actions">
             <button className="btn ghost" onClick={() => { setStep("upload"); setErr(""); }}>← Back</button>
             <button className="btn" disabled={!map.date || (map.mode === "single" ? !map.amount : !map.debit && !map.credit)} onClick={runMapping}>Stage {raw.rows.length} rows →</button>
@@ -1547,24 +1673,27 @@ function Imports({ state, update, cur, cats, catName, accName }) {
         }>
           {/* set by runMapping when rows failed to map — it used to be written
               and then immediately stepped past, so nobody ever saw it */}
-          {err && <div className="banner warn">{err}</div>}
+          {err && <div className="banner warn" role="alert">{err}</div>}
           <div className="banner">Nothing has been saved yet. Duplicates were auto-deselected; anything the app could not categorise is flagged <span className="chip warn">{CONFIDENCE.low.word}</span> — fix them here or add a merchant rule so next month's import lands clean.</div>
           <div className="scroll-y" style={{ maxHeight: 420 }}>
             <table className="tbl">
-              <thead><tr><th></th><th>Date</th><th>Description</th><th className="r">Amount</th><th>Category</th><th>Where the category came from<Help text="How the app arrived at the category on the left, and therefore how much it is worth checking." /></th><th>Flags</th><th>Rule</th></tr></thead>
+              <thead><tr><th scope="col"><span className="sr-only">Import this row</span></th><th scope="col">Date</th><th scope="col">Description</th><th scope="col" className="r">Amount</th><th scope="col">Category</th>
+                <th scope="col">Where the category came from<Help of="where the category came from" text={`How the app arrived at the category on the left, and therefore how much it is worth checking. “${CONFIDENCE.high.word}”: ${CONFIDENCE.high.help} “${CONFIDENCE.medium.word}”: ${CONFIDENCE.medium.help} “${CONFIDENCE.low.word}”: ${CONFIDENCE.low.help} “${CONFIDENCE.manual.word}”: ${CONFIDENCE.manual.help}`} /></th>
+                <th scope="col">Flags</th><th scope="col">Rule</th></tr></thead>
               <tbody>
                 {staged.map((t) => (
                   <tr key={t.id} className={!t.include ? "dim" : ""}>
-                    <td><input type="checkbox" checked={t.include} onChange={(e) => setStg(t.id, { include: e.target.checked })} /></td>
+                    <td><input type="checkbox" aria-label={`Import “${t.desc}” of ${C(t.amountC, cur)} on ${t.date}`} checked={t.include} onChange={(e) => setStg(t.id, { include: e.target.checked })} /></td>
                     <td className="mono">{t.date}</td>
                     <td>{t.desc}</td>
                     <td className="r"><Amt c={t.amountC} cur={cur} /></td>
-                    <td><select className="cat-sel" value={t.categoryId} onChange={(e) => setStg(t.id, { categoryId: e.target.value, confidence: "manual" })}>{cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></td>
+                    <td><select className="cat-sel" aria-label={`Category for “${t.desc}”`} value={t.categoryId} onChange={(e) => setStg(t.id, { categoryId: e.target.value, confidence: "manual" })}>{cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></td>
                     <td><span className={`chip ${t.confidence === "high" ? "ok" : t.confidence === "medium" ? "pending" : t.confidence === "manual" ? "ghost" : "warn"}`}
                       title={(CONFIDENCE[t.confidence] || {}).help}>{(CONFIDENCE[t.confidence] || {}).word || t.confidence}</span></td>
                     <td>{t.dup && <span className="chip warn">duplicate?</span>}</td>
                     <td>{t.confidence !== "high" && (
-                      <button className="mini" title="Create a merchant rule from this description" onClick={() => {
+                      <button className="mini" title="Create a merchant rule from this description"
+                        aria-label={`Create a merchant rule from “${t.desc}”`} onClick={() => {
                         const pattern = t.desc.toUpperCase().split(/\s+/).slice(0, 2).join(" ");
                         update((s) => ({ ...s, rules: [{ id: uid("rule"), pattern, categoryId: t.categoryId }, ...s.rules] }), "rule", `Rule from import: "${pattern}" → ${catName(t.categoryId)}`);
                         setStaged((s) => s.map((x) => x.desc.toUpperCase().includes(pattern) ? { ...x, categoryId: t.categoryId, confidence: "high" } : x));
@@ -1595,14 +1724,15 @@ function Settings({ state, update, cur, fc, lt, catName, accName, theme, setThem
     <div className="grid">
       <Card title="Assumptions">
         <div className="form">
-          <label>Currency symbol<input className="cell-in" style={{ width: 60 }} value={st.currency} onChange={(e) => set({ currency: e.target.value })} /></label>
+          <label>Currency symbol<input className="cell-in" aria-label="Currency symbol" style={{ width: 60 }} value={st.currency} onChange={(e) => set({ currency: e.target.value })} /></label>
           <label>Current age<PctInput value={st.currentAge} step={1} min={AGE_MIN} max={AGE_MAX}
             validate={(v) => ageError("currentAge", v, st)} onCommit={(v) => set({ currentAge: Math.round(v) }, `Current age → ${v}`)} /></label>
           {/* A retirement age below the current age is a valid answer — it means
               already retired — so it is bounded only by the absolute age range. */}
           <label>Retirement age<PctInput value={st.retirementAge} step={1} min={AGE_MIN} max={AGE_MAX}
             validate={(v) => ageError("retirementAge", v, st)} onCommit={(v) => set({ retirementAge: Math.round(v) }, `Retirement age → ${v}`)} /></label>
-          <label title="How far ahead the Long-Term Plan runs — the last age it draws. It is a planning horizon, not a guess at how long you will live.">Plan runs to age<PctInput value={st.planningAge} step={1} min={AGE_MIN} max={AGE_MAX}
+          <label><span className="l-txt">Plan runs to age<Help of="the age the plan runs to" text="How far ahead the Long-Term Plan runs — the last age it draws. It is a planning horizon, not a guess at how long you will live." /></span>
+            <PctInput label="Plan runs to age" value={st.planningAge} step={1} min={AGE_MIN} max={AGE_MAX}
             validate={(v) => ageError("planningAge", v, st)} onCommit={(v) => set({ planningAge: Math.round(v) }, `Planning age → ${v}`)} /></label>
           <label>Inflation %/yr<PctInput value={st.inflationPct} onCommit={(v) => set({ inflationPct: v }, `Inflation → ${v}%`)} /></label>
           <label>Investment return %/yr<PctInput value={st.investReturnPct} onCommit={(v) => set({ investReturnPct: v }, `Investment return → ${v}%`)} /></label>
@@ -1633,7 +1763,7 @@ function Settings({ state, update, cur, fc, lt, catName, accName, theme, setThem
       <Card className="span3" title="Audit trail" right={<span className="muted-s">{state.audit.length} events — every import, edit, exclusion and rule change</span>}>
         <div className="scroll-y" style={{ maxHeight: 340 }}>
           <table className="tbl">
-            <thead><tr><th>When</th><th>Type</th><th>Detail</th></tr></thead>
+            <thead><tr><th scope="col">When</th><th scope="col">Type</th><th scope="col">Detail</th></tr></thead>
             <tbody>
               {state.audit.map((a) => (
                 <tr key={a.id}><td className="mono">{a.when}</td><td><span className={`chip ${a.kind === "import" ? "ok" : a.kind === "rule" ? "pending" : "ghost"}`}>{a.kind}</span></td><td>{a.detail}</td></tr>
@@ -1654,6 +1784,18 @@ const CSS = `
   * { box-sizing: border-box; margin: 0; }
   .app { display: flex; min-height: 100vh; background: var(--bg); color: var(--text);
     font: 14px/1.45 -apple-system, "Segoe UI", Inter, Roboto, sans-serif; }
+
+  /* Text for assistive technology only: still in the accessibility tree, still
+     read out, takes no space and paints nothing. */
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
+
+  /* Nothing in this app said where the keyboard was: inputs and selects had
+     their focus ring removed outright, and no rule ever put one back. One
+     treatment for everything, drawn in the accent already in the palette so it
+     reads against both themes. :focus-visible, so a mouse click does not leave
+     a ring behind on something that was only pressed. */
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .mono, .amt, .num-in, .stat-value, .acc-bal, td.mono, .tl-item b { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
 
   /* nav */
@@ -1672,13 +1814,13 @@ const CSS = `
   /* layout */
   .main { flex: 1; padding: 0 26px 40px; min-width: 0; }
   .topbar { display: flex; align-items: center; gap: 18px; padding: 16px 0 14px; border-bottom: 1px solid var(--border-soft); margin-bottom: 18px; position: sticky; top: 0; background: var(--bg-translucent); backdrop-filter: blur(4px); z-index: 5; }
-  .crumb { font-size: 17px; font-weight: 600; color: var(--text-strong); }
+  .crumb { font-size: 17px; font-weight: 600; color: var(--text-strong); line-height: 1.45; }
   .month-sel { display: flex; align-items: center; gap: 4px; background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: 8px; padding: 3px 6px; }
   .month-sel span { min-width: 76px; text-align: center; font-size: 13px; color: var(--accent-text-2); }
   .month-sel button { background: none; border: 0; color: var(--accent); cursor: pointer; font-size: 15px; padding: 2px 8px; border-radius: 5px; }
   .month-sel button:hover { background: var(--surface-hover-strong); }
   .month-sel .today { font-size: 11px; color: var(--neg); }
-  .scen-pill { margin-left: auto; font-size: 10px; letter-spacing: .14em; padding: 4px 10px; border-radius: 20px; border: 1px solid var(--border-strong); color: var(--text-muted); }
+  .scen-pill { margin-left: auto; font-size: 10px; letter-spacing: .14em; padding: 4px 10px; border-radius: 20px; border: 1px solid var(--border-strong); color: var(--text-muted); display: flex; align-items: center; }
   .scen-pill[data-on="true"] { border-color: var(--neg-border); color: var(--neg); background: var(--neg-bg); }
 
   .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
@@ -1687,15 +1829,21 @@ const CSS = `
 
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; min-width: 0; }
   .card-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }
-  .card-head h3 { font-size: 12px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--text-muted-2); }
+  .card-head h2 { font-size: 12px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--text-muted-2); }
   .acc-type { font-size: 9px; letter-spacing: .12em; color: var(--accent-strong); margin-right: 8px; text-transform: uppercase; background: var(--accent-bg-chip); padding: 2px 7px; border-radius: 4px; }
 
-  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
-  .stat.click { cursor: pointer; } .stat.click:hover { border-color: var(--accent-deep); }
-  .stat-label { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; }
-  .stat-value { font-size: 21px; font-weight: 600; color: var(--text-strong); }
+  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; position: relative; }
+  .stat.click:hover { border-color: var(--accent-deep); }
+  /* The clickable tiles are buttons now; strip the button chrome so they draw
+     exactly as the plain tiles beside them do. */
+  .stat-hit { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 0;
+    color: inherit; font: inherit; }
+  .stat.click .stat-hit { cursor: pointer; }
+  .stat > .help-wrap { position: absolute; top: 12px; right: 13px; }
+  .stat-label { display: block; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; padding-right: 14px; }
+  .stat-value { display: block; font-size: 21px; font-weight: 600; color: var(--text-strong); }
   .stat-value.pos { color: var(--pos); } .stat-value.neg { color: var(--neg); } .stat-value.warn { color: var(--warn); }
-  .stat-sub { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+  .stat-sub { display: block; font-size: 11px; color: var(--text-muted); margin-top: 4px; }
 
   .amt.pos { color: var(--pos); } .amt.neg { color: var(--neg); } .amt.warn { color: var(--warn); font-weight: 600; }
   .amt.muted-s { color: var(--text-muted); } .scen-amt { color: var(--neg); }
@@ -1724,7 +1872,8 @@ const CSS = `
 
   /* inputs */
   input, select { background: var(--surface-sunken); border: 1px solid var(--border-strong); color: var(--text); border-radius: 6px; padding: 5px 8px; font: inherit; }
-  input:focus, select:focus { outline: none; border-color: var(--accent-deep); }
+  input:focus, select:focus { border-color: var(--accent-deep); }
+  input:disabled, select:disabled { cursor: default; }
   .cat-sel { max-width: 175px; font-size: 12px; }
   .cell-in { width: 100%; max-width: 170px; background: transparent; border-color: transparent; }
   .cell-in:hover, .cell-in:focus { border-color: var(--border-strong); background: var(--surface-sunken); }
@@ -1782,11 +1931,13 @@ const CSS = `
   .step.on { border-color: var(--accent-deep); color: var(--step-on-text); }
   .step.done { color: var(--text-muted-2); }
   .step-n { width: 22px; height: 22px; border-radius: 50%; border: 1px solid currentColor; display: grid; place-items: center; font-size: 11px; flex: none; }
-  .drop { border: 1.5px dashed var(--drop-border); border-radius: 12px; padding: 34px 20px; text-align: center; color: var(--text-soft); cursor: pointer; display: flex; flex-direction: column; gap: 8px; align-items: center; }
-  .drop:hover { border-color: var(--accent-deep); background: var(--accent-bg-soft); }
-  .drop.off { opacity: .45; cursor: default; }
-  .drop.off:hover { border-color: var(--drop-border); background: none; }
+  .drop { width: 100%; background: none; font: inherit; border: 1.5px dashed var(--drop-border); border-radius: 12px; padding: 34px 20px; text-align: center; color: var(--text-soft); cursor: pointer; display: flex; flex-direction: column; gap: 8px; align-items: center; }
+  .drop:hover:enabled { border-color: var(--accent-deep); background: var(--accent-bg-soft); }
+  .drop.off, .drop:disabled { opacity: .45; cursor: default; }
   .drop-ic { font-size: 26px; color: var(--accent-strong); }
+  /* Only ever opened by the button above it — kept out of the tab order and out
+     of the accessibility tree so it is not a second, silent stop. */
+  .file-proxy { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 
   /* scenario */
   .scen-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; margin-bottom: 8px; }
@@ -1804,10 +1955,19 @@ const CSS = `
 
   /* explanations: a hover affordance for figures whose derivation is invisible,
      and a legend for the words used in the forecast's basis column */
+  .help-wrap { position: relative; display: inline-block; }
   .help { display: inline-grid; place-items: center; width: 13px; height: 13px; margin-left: 5px; border-radius: 50%;
-    border: 1px solid var(--border-strong); color: var(--text-muted); font-size: 9px; line-height: 1; letter-spacing: 0;
-    cursor: help; vertical-align: 1px; }
-  .help:hover { color: var(--accent); border-color: var(--accent-deep); }
+    border: 1px solid var(--border-strong); background: none; color: var(--text-muted); font: inherit; font-size: 9px;
+    line-height: 1; letter-spacing: 0; padding: 0; cursor: help; vertical-align: 1px; }
+  .help:hover, .help[aria-expanded="true"] { color: var(--accent); border-color: var(--accent-deep); }
+  /* The explanation itself, on the page rather than in a title attribute no
+     keyboard or touch user can summon. Resets the inherited table-header and
+     stat-label casing so the sentence reads as a sentence. */
+  .help-body { position: absolute; z-index: 40; top: calc(100% + 7px); right: -6px; width: 250px;
+    background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: 9px;
+    padding: 9px 11px; color: var(--text-soft); font-size: 11.5px; line-height: 1.5; font-weight: 400;
+    letter-spacing: normal; text-transform: none; text-align: left; white-space: pre-wrap; }
+  .l-txt { display: inline-flex; align-items: center; }
   .legend { display: flex; flex-wrap: wrap; gap: 6px 22px; margin-bottom: 12px; font-size: 11.5px; color: var(--text-muted); }
   .legend > span { display: flex; align-items: center; gap: 7px; min-width: 0; }
   .scen-hint { font-size: 10.5px; line-height: 1.35; color: var(--text-faint); }

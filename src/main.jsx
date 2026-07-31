@@ -41,7 +41,7 @@ function AuthScreen({ onDemo }) {
   return (
     <div className="auth-wrap">
       <div className="auth-card">
-        <div className="auth-brand">LEDGER<span>LINE</span></div>
+        <h1 className="auth-brand">LEDGER<span>LINE</span></h1>
         <div className="auth-sub">Personal finance planning &amp; tracking</div>
         <label className="auth-l">Email
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
@@ -52,7 +52,9 @@ function AuthScreen({ onDemo }) {
             onKeyDown={(e) => e.key === "Enter" && submit()}
             autoComplete={mode === "signup" ? "new-password" : "current-password"} />
         </label>
-        {msg && <div className={`auth-msg ${msg.t}`}>{msg.s}</div>}
+        {/* Sign-in failures were drawn and announced to nobody. An error is an
+            alert; the "account created" note is only news, so it stays polite. */}
+        {msg && <div className={`auth-msg ${msg.t}`} role={msg.t === "err" ? "alert" : "status"}>{msg.s}</div>}
         <button className="auth-btn" disabled={busy} onClick={submit}>
           {busy ? "…" : mode === "signup" ? "Create account" : "Sign in"}
         </button>
@@ -80,8 +82,8 @@ class ErrorBoundary extends React.Component {
     return (
       <div className="auth-wrap">
         <div className="auth-card">
-          <div className="auth-brand">LEDGER<span>LINE</span></div>
-          <div className="auth-sub">Something went wrong on this page</div>
+          <h1 className="auth-brand">LEDGER<span>LINE</span></h1>
+          <div className="auth-sub" role="alert">Something went wrong on this page</div>
           <p className="auth-note">
             Ledgerline hit an error and stopped drawing the page. Your saved data has not been changed or
             deleted — this went wrong while displaying it, not while storing it. Reloading usually clears it.
@@ -102,8 +104,10 @@ function LoadErrorScreen({ detail, onRetry, onFresh }) {
   return (
     <div className="auth-wrap">
       <div className="auth-card">
-        <div className="auth-brand">LEDGER<span>LINE</span></div>
-        <div className="auth-sub">We could not load your saved data</div>
+        <h1 className="auth-brand">LEDGER<span>LINE</span></h1>
+        {/* This screen replaces the whole app to say the data did not load, and
+            nothing announced it: a screen-reader user was told nothing at all. */}
+        <div className="auth-sub" role="alert">We could not load your saved data</div>
         <p className="auth-note">
           Your data is still on the server. This is a problem reaching it — most often a dropped connection —
           not a problem with the data itself. Nothing has been changed or deleted.
@@ -224,9 +228,17 @@ function Root() {
     <>
       <div className="shell-bar">
         <span>{session.user.email}</span>
-        <span className={`save ${saveState}`}>
-          {saveState === "saving" ? "Saving…" : saveState === "saved" ? "All changes saved" : saveState === "error" ? "⚠ Save failed — retrying on next change" : ""}
+        {/* Save state was a silent text swap inside a plain span. Never learning
+            your data failed to save is the worst outcome this app has, so the
+            failure is an assertive alert while the ordinary progress stays
+            polite — two elements, because a live region that changes its own
+            politeness mid-flight is not reliably re-read. */}
+        <span className={`save ${saveState}`} role="status" aria-live="polite" aria-atomic="true">
+          {saveState === "saving" ? "Saving…" : saveState === "saved" ? "All changes saved" : ""}
         </span>
+        {saveState === "error" && (
+          <span className="save error" role="alert">⚠ Save failed — retrying on next change</span>
+        )}
         <button onClick={() => supabase.auth.signOut()}>Sign out</button>
       </div>
       <App boot={boot} onPersist={onPersist} />
@@ -238,14 +250,19 @@ function Root() {
 const AUTH_CSS = `
   .auth-wrap { min-height: 100vh; display: grid; place-items: center; background: var(--bg);
     font-family: "Inter", -apple-system, system-ui, sans-serif; }
+  /* Same focus treatment as the app: nothing here said where the keyboard was
+     either, because the input's outline was switched off outright. */
+  .auth-wrap :focus-visible, .shell-bar :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
   .auth-card { width: min(360px, 92vw); background: var(--surface); border: 1px solid var(--border-2); border-radius: 14px;
     padding: 28px 26px; display: flex; flex-direction: column; gap: 12px; }
-  .auth-brand { color: var(--text-strong); font-weight: 800; letter-spacing: 3px; font-size: 18px; }
+  .auth-brand { color: var(--text-strong); font-weight: 800; letter-spacing: 3px; font-size: 18px; margin: 0; }
   .auth-brand span { color: var(--accent-strong); }
   .auth-sub { color: var(--text-muted); font-size: 12.5px; margin-bottom: 6px; }
   .auth-l { color: var(--text-label); font-size: 12px; display: flex; flex-direction: column; gap: 5px; }
   .auth-l input { background: var(--bg); border: 1px solid var(--border-2); border-radius: 8px; color: var(--text-strong);
-    padding: 9px 11px; font-size: 14px; outline: none; }
+    padding: 9px 11px; font-size: 14px; }
   .auth-l input:focus { border-color: var(--accent-deep); }
   .auth-btn { margin-top: 6px; background: var(--accent-deep); color: var(--on-accent); font-weight: 700; border: none;
     border-radius: 8px; padding: 10px; font-size: 14px; cursor: pointer; }
