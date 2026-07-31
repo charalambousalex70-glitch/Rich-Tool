@@ -687,6 +687,43 @@ const Stat = ({ label, value, sub, tone, onClick, help }) => {
     </div>
   );
 };
+/* A table has no width of its own to give away. Below the width its columns
+   need it simply stops shrinking, and — with no scroll container anywhere in
+   the app — pushes the whole document sideways instead. The .topbar and the
+   sidebar are sticky, so they stay pinned while the content slides out from
+   under them: the page comes apart rather than degrading. Every table sits in
+   one of these now, so a table too wide for its card spends the overflow
+   inside the card.
+
+   A region that scrolls has to be reachable from a keyboard, so it becomes a
+   focusable, named region — but only while it actually overflows, so a table
+   that fits leaves no empty tab stop behind. For the same reason it only
+   clips while it overflows: clipping a table that fits would cut off the
+   explanation panels that hang out of its header cells for nothing. */
+const TableScroll = ({ label, maxHeight, children }) => {
+  const ref = useRef(null);
+  const [scrolls, setScrolls] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const check = () => setScrolls(el.scrollWidth > el.clientWidth + 1);
+    check();
+    if (typeof ResizeObserver === "undefined") return; // jsdom, older Safari
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    if (el.firstElementChild) ro.observe(el.firstElementChild);
+    return () => ro.disconnect();
+  }, []);
+  return (
+    <div ref={ref} className={`tbl-wrap ${scrolls ? "on" : ""} ${maxHeight ? "capped" : ""}`}
+      style={maxHeight ? { maxHeight } : undefined}
+      tabIndex={scrolls ? 0 : undefined} role={scrolls ? "region" : undefined}
+      aria-label={scrolls ? `${label} — wider than the screen, scrolls sideways` : undefined}>
+      {children}
+    </div>
+  );
+};
+
 /* Recharts emits a bare <svg> with no name and no text alternative, so a screen
    reader reader finds nothing at all where the chart is. Name the picture, and
    put a sentence next to it saying what it shows — pointing at the table with
@@ -921,6 +958,7 @@ function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut
         {pendingRecurring.length === 0 && <div className="empty">Every expected recurring item is matched to an actual. Fully reconciled month.</div>}
         {/* No header row by design — the columns are named in the caption instead,
             so the table is not four unlabelled columns to a screen reader. */}
+        <TableScroll label="Still pending">
         <table className="tbl">
           <caption className="sr-only">
             Recurring items expected in {ymLabel(ym)} with no matching transaction yet. Columns: item, the day of
@@ -937,6 +975,7 @@ function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut
             ))}
           </tbody>
         </table>
+        </TableScroll>
       </Card>
 
       <Card title="Net worth trajectory" className="span2">
@@ -991,6 +1030,7 @@ function Transactions({ state, update, cur, ym, txnFilter, setTxnFilter, cats, c
         </div>
       }>
         {rows.length === 0 && <div className="empty">No transactions for this month and filter. Use Imports to load a statement, or add one manually below.</div>}
+        <TableScroll label="Transactions">
         <table className="tbl">
           <thead><tr><th scope="col">Date</th><th scope="col">Description</th><th scope="col">Account</th><th scope="col">Category</th><th scope="col" className="r">Amount</th><th scope="col">Flags</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
           <tbody>
@@ -1022,6 +1062,7 @@ function Transactions({ state, update, cur, ym, txnFilter, setTxnFilter, cats, c
             ))}
           </tbody>
         </table>
+        </TableScroll>
         <AddTxn state={state} update={update} ym={ym} cats={cats} />
       </Card>
     </div>
@@ -1156,6 +1197,7 @@ function Recurring({ state, update, cur, ym, cats }) {
           help="Planned income less planned expenses. Annual and irregular bills are not in here — they sit on the Annual Expenses page and only land in the months they fall due. Money moved between your own accounts is not counted either." />
       </div>
       <Card className="span3" title="Regular monthly income & expenses" right={<span className="muted-s">edits feed the forecast and long-term plan immediately</span>}>
+        <TableScroll label="Regular monthly income and expenses">
         <table className="tbl">
           <thead><tr><th scope="col">Item</th><th scope="col">Category</th><th scope="col">Expected day</th><th scope="col" className="r">Amount / month</th>
             <th scope="col">This month ({ymShort(ym)})<Help of="the this-month column" text="What actually went through this month. “actual” means the app found real transactions matching this item, and the figure shown is their total, not the planned amount. “pending” means it has found none yet." /></th>
@@ -1182,6 +1224,7 @@ function Recurring({ state, update, cur, ym, cats }) {
             })}
           </tbody>
         </table>
+        </TableScroll>
         <button className="btn ghost" onClick={() => update((s) => ({ ...s, recurring: [...s.recurring, { id: uid("rec"), name: "New item", categoryId: "cat_general", amountC: -10000, day: 1 }] }), "edit", "Added recurring item")}>+ Add recurring item</button>
       </Card>
     </div>
@@ -1217,6 +1260,7 @@ function Annual({ state, update, cur, ym, cats, goTxns }) {
         </div>
       </Card>
       <Card className="span3" title="Annual & irregular expenses" right={<span className="muted-s">each amount grows by its annual increase, every year of the forecast</span>}>
+        <TableScroll label="Annual and irregular expenses">
         <table className="tbl">
           <thead><tr><th scope="col">Item</th><th scope="col">Category</th><th scope="col">Month</th><th scope="col" className="r">Amount</th>
             <th scope="col">Annual increase %<Help of="the annual increase column" text="How much this bill goes up each year. Applied on top of the amount for every year the forecast and the long-term plan run — 0 keeps it flat." /></th>
@@ -1240,6 +1284,7 @@ function Annual({ state, update, cur, ym, cats, goTxns }) {
             })}
           </tbody>
         </table>
+        </TableScroll>
         <button className="btn ghost" onClick={() => update((s) => ({ ...s, annual: [...s.annual, { id: uid("ann"), name: "New annual item", categoryId: "cat_general", month: 1, amountC: -50000, escalationPct: 5 }] }), "edit", "Added annual item")}>+ Add annual item</button>
       </Card>
     </div>
@@ -1351,6 +1396,7 @@ function Forecast({ state, update, cur, fc, fcScen, palette }) {
       </Card>
       <Card className="span3" title="Monthly detail" right={<span className="muted-s">a month stops being pure plan as soon as its transactions are matched</span>}>
         {basisLegend}
+        <TableScroll label="Monthly detail">
         <table className="tbl">
           <thead><tr><th scope="col">Month</th>
             <th scope="col">Figures are<Help of="the figures-are column" text={`${BASIS_HELP.blend}\n\n${BASIS_HELP.plan}`} /></th>
@@ -1372,6 +1418,7 @@ function Forecast({ state, update, cur, fc, fcScen, palette }) {
             ))}
           </tbody>
         </table>
+        </TableScroll>
       </Card>
     </div>
   );
@@ -1434,7 +1481,7 @@ function LongTerm({ state, update, cur, lt, ltScen, palette }) {
           validate={(v) => ageError("planningAge", v, st)}
           onCommit={(v) => update((s) => ({ ...s, settings: { ...s.settings, planningAge: Math.round(v) } }), "edit", `Planning age → ${v}`)} /></label>
       }>
-        <div className="scroll-y">
+        <TableScroll label="Annual projection">
           <table className="tbl">
             <thead><tr><th scope="col">Year</th><th scope="col">Age</th><th scope="col"><span className="sr-only">Retired</span></th><th scope="col" className="r">Income</th><th scope="col" className="r">Spend</th><th scope="col" className="r">Net</th><th scope="col" className="r">Cash</th><th scope="col" className="r">Investments</th><th scope="col" className="r">Property</th><th scope="col" className="r">Mortgage</th><th scope="col" className="r">Net worth</th></tr></thead>
             <tbody>
@@ -1454,7 +1501,7 @@ function LongTerm({ state, update, cur, lt, ltScen, palette }) {
               ))}
             </tbody>
           </table>
-        </div>
+        </TableScroll>
       </Card>
     </div>
   );
@@ -1654,7 +1701,7 @@ function Imports({ state, update, cur, cats, catName, accName }) {
             <p className="muted">No bank connections, no stored credentials — you stay in control of what enters the model. Nothing is saved until you commit on the review screen.</p>
           </Card>
           <Card title="Merchant rules" right={<span className="muted-s">drive auto-categorisation</span>}>
-            <div className="scroll-y" style={{ maxHeight: 260 }}>
+            <TableScroll label="Merchant rules" maxHeight={260}>
               <table className="tbl">
                 <thead><tr><th scope="col">If description contains</th><th scope="col">Categorise as</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
                 <tbody>
@@ -1667,10 +1714,11 @@ function Imports({ state, update, cur, cats, catName, accName }) {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </TableScroll>
             <button className="btn ghost" onClick={() => update((s) => ({ ...s, rules: [{ id: uid("rule"), pattern: "NEW PATTERN", categoryId: "cat_general" }, ...s.rules] }), "rule", "Added merchant rule")}>+ Add rule</button>
           </Card>
           <Card className="span3" title="Import history">
+            <TableScroll label="Import history">
             <table className="tbl">
               <thead><tr><th scope="col">When</th><th scope="col">File</th><th scope="col" className="r">Transactions</th><th scope="col">Accounts</th></tr></thead>
               <tbody>
@@ -1679,6 +1727,7 @@ function Imports({ state, update, cur, cats, catName, accName }) {
                 ))}
               </tbody>
             </table>
+            </TableScroll>
           </Card>
         </>
       )}
@@ -1709,6 +1758,7 @@ function Imports({ state, update, cur, cats, catName, accName }) {
             )}
           </div>
           <div className="muted-s" style={{ margin: "10px 0 4px" }}>Preview (first 5 rows as they will be interpreted)</div>
+          <TableScroll label="Preview of the first five rows">
           <table className="tbl">
             <thead><tr><th scope="col">Date</th><th scope="col">Description</th><th scope="col" className="r">Amount</th></tr></thead>
             <tbody>
@@ -1719,6 +1769,7 @@ function Imports({ state, update, cur, cats, catName, accName }) {
               })}
             </tbody>
           </table>
+          </TableScroll>
           {err && <div className="banner warn" role="alert">{err}</div>}
           <div className="actions">
             <button className="btn ghost" onClick={() => { setStep("upload"); setErr(""); }}>← Back</button>
@@ -1735,7 +1786,7 @@ function Imports({ state, update, cur, cats, catName, accName }) {
               and then immediately stepped past, so nobody ever saw it */}
           {err && <div className="banner warn" role="alert">{err}</div>}
           <div className="banner">Nothing has been saved yet. Duplicates were auto-deselected; anything the app could not categorise is flagged <span className="chip warn">{CONFIDENCE.low.word}</span> — fix them here or add a merchant rule so next month's import lands clean.</div>
-          <div className="scroll-y" style={{ maxHeight: 420 }}>
+          <TableScroll label="Staged transactions" maxHeight={420}>
             <table className="tbl">
               <thead><tr><th scope="col"><span className="sr-only">Import this row</span></th><th scope="col">Date</th><th scope="col">Description</th><th scope="col" className="r">Amount</th><th scope="col">Category</th>
                 <th scope="col">Where the category came from<Help of="where the category came from" text={`How the app arrived at the category on the left, and therefore how much it is worth checking. “${CONFIDENCE.high.word}”: ${CONFIDENCE.high.help} “${CONFIDENCE.medium.word}”: ${CONFIDENCE.medium.help} “${CONFIDENCE.low.word}”: ${CONFIDENCE.low.help} “${CONFIDENCE.manual.word}”: ${CONFIDENCE.manual.help}`} /></th>
@@ -1766,7 +1817,7 @@ function Imports({ state, update, cur, cats, catName, accName }) {
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableScroll>
           <div className="actions">
             <button className="btn ghost" onClick={() => { setErr(""); setStep(raw ? "map" : "upload"); }}>← Back</button>
             <button className="btn" disabled={!stats.inc} onClick={commit}>Commit {stats.inc} transactions</button>
@@ -1824,7 +1875,7 @@ function Settings({ state, update, cur, fc, lt, catName, accName, theme, setThem
         <p className="muted-s" style={{ marginTop: 10 }}>When you are signed in, every change is saved to your account on its own, and nobody else can read it. In demo mode nothing is saved — close the tab and the figures are gone, so export anything you want to keep.</p>
       </Card>
       <Card className="span3" title="Audit trail" right={<span className="muted-s">{state.audit.length} events — every import, edit, exclusion and rule change</span>}>
-        <div className="scroll-y" style={{ maxHeight: 340 }}>
+        <TableScroll label="Audit trail" maxHeight={340}>
           <table className="tbl">
             <thead><tr><th scope="col">When</th><th scope="col">Type</th><th scope="col">Detail</th></tr></thead>
             <tbody>
@@ -1833,7 +1884,7 @@ function Settings({ state, update, cur, fc, lt, catName, accName, theme, setThem
               ))}
             </tbody>
           </table>
-        </div>
+        </TableScroll>
       </Card>
     </div>
   );
@@ -1935,7 +1986,24 @@ const CSS = `
      it below the contrast floor. */
   .tbl tr.dim td, .tbl tr.dim td .amt, .tbl tr.dim td .muted-s { color: var(--text-muted); font-style: italic; }
   .tbl tr.hl td { background: var(--row-hl); }
-  .scroll-y { overflow-y: auto; }
+  /* Set by TableScroll: "on" while the table is wider than the card, "capped"
+     where the card also limits the height. Kept off until it is needed so a
+     table that fits is never a clipping box for the explanation panels that
+     hang out of its header cells. */
+  .tbl-wrap { min-width: 0; }
+  /* position, so the absolutely-positioned .sr-only labels inside the header
+     cells resolve against this box. Left to resolve against the page they
+     escape the clipping — each one sitting at the far right of a table 700px
+     wide inside a 221px card — and the document grows to hold them, which is
+     the very horizontal scrollbar this container exists to prevent. Scoped to
+     the scrolling state: position: relative gives the box its own paint layer,
+     which changes how the text inside it is antialiased, and a table that fits
+     should render exactly as it always has. */
+  .tbl-wrap.on { overflow-x: auto; position: relative; }
+  .tbl-wrap.capped { overflow-y: auto; position: relative; }
+  /* The focus ring of a scrollable region is drawn inside it, or the outline
+     is the thing that overflows the card. */
+  .tbl-wrap:focus-visible { outline-offset: -2px; }
 
   .chip { display: inline-block; font-size: 0.625rem; padding: 2px 8px; border-radius: 10px; background: var(--chip-bg); color: var(--text-muted-2); border: 1px solid var(--border-strong); letter-spacing: .03em; white-space: nowrap; }
   .chip.ok { background: var(--accent-bg); color: var(--accent); border-color: var(--accent-border); }
