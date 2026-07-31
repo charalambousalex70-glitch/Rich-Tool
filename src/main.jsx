@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
 import { supabase } from "./supabaseClient.js";
@@ -135,6 +135,12 @@ function Root() {
   const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
   const timer = useRef(null);
   const latest = useRef(null);
+  /* The save path must not close over `session`: a token refresh hands back a
+     new session object, which would give `flush` — and therefore `onPersist` —
+     a new identity, and identity is exactly what App's persist effect watches.
+     Read the live session through a ref instead. */
+  const sessionRef = useRef(session);
+  useEffect(() => { sessionRef.current = session; }, [session]);
 
   // auth session tracking
   useEffect(() => {
@@ -172,30 +178,38 @@ function Root() {
 
   const retryLoad = () => { setFreshAnyway(false); setLoadError(null); setBoot(undefined); setAttempt((a) => a + 1); };
 
-  const flush = async () => {
-    if (!supabase || !session || latest.current == null) return;
+  const flush = useCallback(async () => {
+    const s = sessionRef.current;
+    if (!supabase || !s || latest.current == null) return;
     setSaveState("saving");
     const { error } = await supabase.from("user_state").upsert(
-      { user_id: session.user.id, state: latest.current, updated_at: new Date().toISOString() },
+      { user_id: s.user.id, state: latest.current, updated_at: new Date().toISOString() },
       { onConflict: "user_id" }
     );
     setSaveState(error ? "error" : "saved");
     if (error) console.error("Save failed:", error);
-  };
+  }, []);
 
-  const onPersist = (state) => {
+  /* App reports every change here, and its persist effect lists this callback
+     among its dependencies. Rebuilt on each render, that was a loop: a save set
+     `saveState`, the re-render produced a fresh `onPersist`, the effect saw a
+     changed dependency and saved again. One edit followed by twelve seconds of
+     doing nothing sent nine upserts, and the indicator never left "Saving…" —
+     "All changes saved" was a state the user could not reach. Holding the
+     identity steady is the whole fix; the debounce below is unchanged. */
+  const onPersist = useCallback((state) => {
     latest.current = state;
     setSaveState("saving");
     clearTimeout(timer.current);
     timer.current = setTimeout(flush, SAVE_DEBOUNCE_MS);
-  };
+  }, [flush]);
 
   // best-effort flush when the tab closes
   useEffect(() => {
     const h = () => { clearTimeout(timer.current); flush(); };
     window.addEventListener("beforeunload", h);
     return () => window.removeEventListener("beforeunload", h);
-  });
+  }, [flush]);
 
   if (demo) return (
     <>

@@ -697,6 +697,43 @@ const ChartFrame = ({ name, summary, children }) => (
     <p className="sr-only">{summary}</p>
   </>
 );
+
+/* Nothing in this app's CSS transitions or animates, so prefers-reduced-motion
+   had nothing to switch off — except Recharts, which grows every bar, line and
+   area in on mount and again on every data change, and has that on by default.
+   Six charts do it. This is the switch. */
+const useReducedMotion = () => {
+  const query = "(prefers-reduced-motion: reduce)";
+  const [reduced, setReduced] = useState(
+    () => typeof window !== "undefined" && !!window.matchMedia && window.matchMedia(query).matches
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia(query);
+    const onChange = () => setReduced(mq.matches);
+    onChange();
+    // Safari below 14 only has the deprecated form.
+    if (mq.addEventListener) { mq.addEventListener("change", onChange); return () => mq.removeEventListener("change", onChange); }
+    mq.addListener(onChange); return () => mq.removeListener(onChange);
+  }, []);
+  return reduced;
+};
+
+/* Money in and money out were told apart by hue alone. In the light palette the
+   two measure 1.10:1 against each other, so to a deuteranope — or a greyscale
+   printer — the bars are one colour. Money out is hatched now; the hue is the
+   decoration, the texture is the signal. Ids are prefixed per chart because two
+   charts share a document and `url(#id)` is document-wide. */
+const ChartHatch = ({ id, palette }) => (
+  <defs>
+    {["neg", "negPlan"].map((k) => (
+      <pattern key={k} id={`${id}-${k}`} width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+        <rect width="7" height="7" fill={palette[k]} />
+        <line x1="0" y1="0" x2="0" y2="7" stroke={palette.stripe} strokeWidth="2.5" />
+      </pattern>
+    ))}
+  </defs>
+);
 const Amt = ({ c, cur, zero }) => (
   <span className={`amt ${c > 0 ? "pos" : c < 0 ? "neg" : ""}`}>{zero && c === 0 ? "—" : C(c, cur)}</span>
 );
@@ -814,6 +851,7 @@ const forecastVarianceHelp = "How far this month has landed from the plan. Shown
    PAGES
    ============================================================ */
 function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut, fc, lt, goTxns, cats, catName, palette }) {
+  const still = useReducedMotion();
   const spendPct = budgetOut !== 0 ? Math.round((monthSpend / budgetOut) * 100) : 0;
   const byCat = {};
   state.txns.filter((t) => t.date.slice(0, 7) === ym && isFlow(t, cats) && t.amountC < 0)
@@ -843,20 +881,21 @@ function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut
       </div>
 
       <Card title="12-month cashflow ribbon" className="span2"
-        right={<span className="muted-s">solid bar = actual + planned · pale = planned<Help of="the bar shading" text={`${BASIS_HELP.blend}\n\n${BASIS_HELP.plan}`} /></span>}>
+        right={<span className="muted-s">full colour = actual + planned · pale = planned · hatched = a month that ends down<Help of="the bar shading" text={`${BASIS_HELP.blend}\n\n${BASIS_HELP.plan}\n\nA hatched bar is a month that ends with more going out than coming in. The hatching says so on its own, so the sign does not depend on telling the two bar colours apart.`} /></span>}>
         <ChartFrame name="12-month cashflow ribbon"
           summary={`A bar for each of the next 12 months showing money in less money out, with a line for the running total. The same figures are listed month by month in the table on the Forecast page. Over the 12 months the running total ends at ${C0(fc.rows[11].cum, cur)}.`}>
         <ResponsiveContainer width="100%" height={210}>
           <ComposedChart data={fc.rows.map((r) => ({ ...r, name: ymShort(r.ym) }))}>
+            <ChartHatch id="ribbon" palette={palette} />
             <CartesianGrid stroke={palette.grid} vertical={false} />
             <XAxis dataKey="name" tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} />
             <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} width={70} />
             <Tooltip content={chartTip(cur)} />
             <ReferenceLine y={0} stroke={palette.zero} />
-            <Bar dataKey="net" name="Net flow" radius={[3, 3, 0, 0]}>
-              {fc.rows.map((r, i) => <Cell key={i} fill={r.mode !== "plan" ? (r.net >= 0 ? palette.pos : palette.neg) : (r.net >= 0 ? palette.posPlan : palette.negPlan)} />)}
+            <Bar dataKey="net" name="Net flow" radius={[3, 3, 0, 0]} isAnimationActive={!still}>
+              {fc.rows.map((r, i) => <Cell key={i} fill={r.mode !== "plan" ? (r.net >= 0 ? palette.pos : "url(#ribbon-neg)") : (r.net >= 0 ? palette.posPlan : "url(#ribbon-negPlan)")} />)}
             </Bar>
-            <Line dataKey="cum" name="Cumulative" stroke={palette.line} strokeWidth={2} dot={false} />
+            <Line dataKey="cum" name="Cumulative" stroke={palette.line} strokeWidth={2} dot={false} isAnimationActive={!still} />
           </ComposedChart>
         </ResponsiveContainer>
         </ChartFrame>
@@ -906,7 +945,7 @@ function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut
             <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} width={80} />
             <Tooltip content={chartTip(cur)} />
             <ReferenceLine x={state.settings.retirementAge} stroke={palette.marker} strokeDasharray="4 3" label={{ value: "retire", fill: palette.marker, fontSize: 11 }} />
-            <Area dataKey="nw" name="Net worth" stroke={palette.pos} fill="url(#nwg)" strokeWidth={2} />
+            <Area dataKey="nw" name="Net worth" stroke={palette.pos} fill="url(#nwg)" strokeWidth={2} isAnimationActive={!still} />
             <defs><linearGradient id="nwg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={palette.pos} stopOpacity={0.28} /><stop offset="100%" stopColor={palette.pos} stopOpacity={0.02} /></linearGradient></defs>
           </AreaChart>
         </ResponsiveContainer>
@@ -1019,6 +1058,7 @@ function AddTxn({ state, update, ym, cats }) {
 }
 
 function Accounts({ state, update, cur, goTxns, palette }) {
+  const still = useReducedMotion();
   const [recon, setRecon] = useState({});
   const [snap, setSnap] = useState({});
   const groups = [["bank", "Bank"], ["credit", "Credit cards"], ["investment", "Investments"], ["crypto", "Crypto"]];
@@ -1053,7 +1093,7 @@ function Accounts({ state, update, cur, goTxns, palette }) {
                   <AreaChart data={history(acc)}>
                     <XAxis dataKey="name" hide /><YAxis hide domain={["auto", "auto"]} />
                     <Tooltip content={chartTip(cur)} />
-                    <Area dataKey="bal" name="Balance" stroke={bal >= 0 ? palette.pos : palette.neg} fill="none" strokeWidth={1.5} />
+                    <Area dataKey="bal" name="Balance" stroke={bal >= 0 ? palette.pos : palette.neg} fill="none" strokeWidth={1.5} isAnimationActive={!still} />
                   </AreaChart>
                 </ResponsiveContainer>
                 </ChartFrame>
@@ -1203,6 +1243,7 @@ function Annual({ state, update, cur, ym, cats, goTxns }) {
 }
 
 function Compensation({ state, update, cur, palette }) {
+  const still = useReducedMotion();
   const { comp, mortgage } = state;
   const setComp = (patch, msg) => update((s) => ({ ...s, comp: { ...s.comp, ...patch } }), "edit", msg);
   const setMort = (patch, msg) => update((s) => ({ ...s, mortgage: { ...s.mortgage, ...patch } }), "edit", msg);
@@ -1242,9 +1283,9 @@ function Compensation({ state, update, cur, palette }) {
             <XAxis dataKey="name" tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} />
             <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} width={80} />
             <Tooltip content={chartTip(cur)} /><Legend wrapperStyle={{ fontSize: 12 }} />
-            <Bar dataKey="int" name="Interest / yr" stackId="a" fill={palette.neg} radius={[0, 0, 0, 0]} />
-            <Bar dataKey="prin" name="Principal / yr" stackId="a" fill={palette.invest} radius={[3, 3, 0, 0]} />
-            <Line dataKey="bal" name="Balance" stroke={palette.line} strokeWidth={2} dot={false} />
+            <Bar dataKey="int" name="Interest / yr" stackId="a" fill={palette.neg} radius={[0, 0, 0, 0]} isAnimationActive={!still} />
+            <Bar dataKey="prin" name="Principal / yr" stackId="a" fill={palette.invest} radius={[3, 3, 0, 0]} isAnimationActive={!still} />
+            <Line dataKey="bal" name="Balance" stroke={palette.line} strokeWidth={2} dot={false} isAnimationActive={!still} />
           </ComposedChart>
         </ResponsiveContainer>
         </ChartFrame>
@@ -1283,6 +1324,7 @@ function ScenarioPanel({ state, update }) {
 }
 
 function Forecast({ state, update, cur, fc, fcScen, palette }) {
+  const still = useReducedMotion();
   const chart = fc.rows.map((r, i) => ({ name: ymShort(r.ym), base: r.cum, scen: fcScen ? fcScen.rows[i].cum : undefined }));
   return (
     <div className="grid">
@@ -1297,8 +1339,8 @@ function Forecast({ state, update, cur, fc, fcScen, palette }) {
             <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} width={80} />
             <Tooltip content={chartTip(cur)} /><Legend wrapperStyle={{ fontSize: 12 }} />
             <ReferenceLine y={0} stroke={palette.zero} />
-            <Line dataKey="base" name="Base case" stroke={palette.pos} strokeWidth={2} dot={false} />
-            {fcScen && <Line dataKey="scen" name="Scenario" stroke={palette.neg} strokeWidth={2} strokeDasharray="6 3" dot={false} />}
+            <Line dataKey="base" name="Base case" stroke={palette.pos} strokeWidth={2} dot={false} isAnimationActive={!still} />
+            {fcScen && <Line dataKey="scen" name="Scenario" stroke={palette.neg} strokeWidth={2} strokeDasharray="6 3" dot={false} isAnimationActive={!still} />}
           </LineChart>
         </ResponsiveContainer>
         </ChartFrame>
@@ -1332,6 +1374,7 @@ function Forecast({ state, update, cur, fc, fcScen, palette }) {
 }
 
 function LongTerm({ state, update, cur, lt, ltScen, palette }) {
+  const still = useReducedMotion();
   const st = state.settings;
   /* The projection runs from the current age to the planning age, so if the
      planning age is not above the current age there are no years to draw.
@@ -1371,13 +1414,13 @@ function LongTerm({ state, update, cur, lt, ltScen, palette }) {
             <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} width={86} />
             <Tooltip content={chartTip(cur)} /><Legend wrapperStyle={{ fontSize: 12 }} />
             <ReferenceLine x={st.retirementAge} stroke={palette.marker} strokeDasharray="4 3" />
-            <Area dataKey="cash" name="Cash" stackId="a" fill={palette.cash} stroke="none" />
-            <Area dataKey="invest" name="Investments" stackId="a" fill={palette.invest} stroke="none" />
-            <Area dataKey="crypto" name="Crypto" stackId="a" fill={palette.crypto} stroke="none" />
-            <Area dataKey="property" name="Property" stackId="a" fill={palette.property} stroke="none" />
-            <Area dataKey="mort" name="Mortgage" fill={palette.mortgage} stroke="none" />
-            <Line dataKey="nw" name="Net worth (base)" stroke={palette.nwLine} strokeWidth={2} dot={false} />
-            {ltScen && <Line dataKey="scen" name="Net worth (scenario)" stroke={palette.neg} strokeWidth={2} strokeDasharray="6 3" dot={false} />}
+            <Area dataKey="cash" name="Cash" stackId="a" fill={palette.cash} stroke="none" isAnimationActive={!still} />
+            <Area dataKey="invest" name="Investments" stackId="a" fill={palette.invest} stroke="none" isAnimationActive={!still} />
+            <Area dataKey="crypto" name="Crypto" stackId="a" fill={palette.crypto} stroke="none" isAnimationActive={!still} />
+            <Area dataKey="property" name="Property" stackId="a" fill={palette.property} stroke="none" isAnimationActive={!still} />
+            <Area dataKey="mort" name="Mortgage" fill={palette.mortgage} stroke="none" isAnimationActive={!still} />
+            <Line dataKey="nw" name="Net worth (base)" stroke={palette.nwLine} strokeWidth={2} dot={false} isAnimationActive={!still} />
+            {ltScen && <Line dataKey="scen" name="Net worth (scenario)" stroke={palette.neg} strokeWidth={2} strokeDasharray="6 3" dot={false} isAnimationActive={!still} />}
           </ComposedChart>
         </ResponsiveContainer>
         </ChartFrame>
@@ -1553,12 +1596,25 @@ function Imports({ state, update, cur, cats, catName, accName }) {
 
   return (
     <div className="grid">
+      {/* Which step you were on, and which you had finished, was drawn only in
+          colour: a green border for now, a paler grey for done. Both are the
+          same grey to anyone who cannot separate them, and the same grey in
+          print. Every step now says its own number, its own total and its own
+          state in words. */}
       <div className="steps span3">
-        {["upload", "map", "review"].map((s, i) => (
-          <div key={s} className={`step ${step === s ? "on" : ""} ${["upload","map","review"].indexOf(step) > i ? "done" : ""}`}>
-            <span className="step-n">{i + 1}</span>{s === "upload" ? "Upload statement" : s === "map" ? "Map columns" : "Review & commit"}
-          </div>
-        ))}
+        {["upload", "map", "review"].map((s, i) => {
+          const done = ["upload", "map", "review"].indexOf(step) > i;
+          const here = step === s;
+          return (
+            <div key={s} className={`step ${here ? "on" : ""} ${done ? "done" : ""}`} aria-current={here ? "step" : undefined}>
+              <span className="step-n" aria-hidden="true">{done ? "✓" : i + 1}</span>
+              <span className="step-txt">
+                <span className="step-of">Step {i + 1} of 3 — {done ? "done" : here ? "you are here" : "not started"}</span>
+                {s === "upload" ? "Upload statement" : s === "map" ? "Map columns" : "Review & commit"}
+              </span>
+            </div>
+          );
+        })}
       </div>
 
       {step === "upload" && (
@@ -1690,7 +1746,10 @@ function Imports({ state, update, cur, cats, catName, accName }) {
                     <td><select className="cat-sel" aria-label={`Category for “${t.desc}”`} value={t.categoryId} onChange={(e) => setStg(t.id, { categoryId: e.target.value, confidence: "manual" })}>{cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></td>
                     <td><span className={`chip ${t.confidence === "high" ? "ok" : t.confidence === "medium" ? "pending" : t.confidence === "manual" ? "ghost" : "warn"}`}
                       title={(CONFIDENCE[t.confidence] || {}).help}>{(CONFIDENCE[t.confidence] || {}).word || t.confidence}</span></td>
-                    <td>{t.dup && <span className="chip warn">duplicate?</span>}</td>
+                    {/* A deselected row was marked by nothing but a drop in
+                        opacity, which says nothing to anyone who cannot see it
+                        and left the row's own text at about 3:1. Say it. */}
+                    <td>{t.dup && <span className="chip warn">duplicate?</span>}{!t.include && <span className="chip">not importing</span>}</td>
                     <td>{t.confidence !== "high" && (
                       <button className="mini" title="Create a merchant rule from this description"
                         aria-label={`Create a merchant rule from “${t.desc}”`} onClick={() => {
@@ -1858,7 +1917,13 @@ const CSS = `
   .tbl td { padding: 6px 8px; border-bottom: 1px solid var(--border-subtle); vertical-align: middle; }
   .tbl tr:hover td { background: var(--surface-hover); }
   .tbl .r, th.r { text-align: right; }
-  .tbl tr.dim { opacity: .38; }
+  /* Excluded transactions, and import rows you have deselected, were marked by
+     nothing but opacity: .38 — no signal at all if you cannot see it, and it
+     drove the row's own text down to about 3.0:1 in dark and 2.3:1 in light.
+     Both tables now say it in the Flags column; the row is de-emphasised by
+     dropping to the muted colour and leaning it over, neither of which takes
+     it below the contrast floor. */
+  .tbl tr.dim td, .tbl tr.dim td .amt, .tbl tr.dim td .muted-s { color: var(--text-muted); font-style: italic; }
   .tbl tr.hl td { background: var(--row-hl); }
   .scroll-y { overflow-y: auto; }
 
@@ -1896,7 +1961,11 @@ const CSS = `
   .btn-col { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
 
   .btn { background: var(--btn-bg); color: var(--btn-text); border: 1px solid var(--accent-deep); border-radius: 7px; padding: 7px 16px; font: inherit; font-size: 13px; cursor: pointer; }
-  .btn:hover { background: var(--btn-bg-hover); } .btn:disabled { opacity: .4; cursor: default; }
+  .btn:hover { background: var(--btn-bg-hover); }
+  /* opacity: .4 put the label at 2.74:1 in dark and 1.81:1 in light — an
+     unreadable button is not the same thing as a disabled one. Flat and
+     colourless reads as "off" without hiding what the button says. */
+  .btn:disabled { background: var(--chip-bg); color: var(--text-muted-2); border-color: var(--border-strong); cursor: default; }
   .btn.ghost { background: transparent; border-color: var(--border-strong); color: var(--text-muted-2); }
   .btn.ghost:hover { color: var(--text); border-color: var(--accent-deep); }
   .mini { background: transparent; border: 1px solid transparent; color: var(--text-muted); border-radius: 5px; padding: 2px 7px; cursor: pointer; font-size: 12px; }
@@ -1931,6 +2000,9 @@ const CSS = `
   .step.on { border-color: var(--accent-deep); color: var(--step-on-text); }
   .step.done { color: var(--text-muted-2); }
   .step-n { width: 22px; height: 22px; border-radius: 50%; border: 1px solid currentColor; display: grid; place-items: center; font-size: 11px; flex: none; }
+  .step-txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .step-of { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-muted); }
+  .step.on .step-of, .step.done .step-of { color: inherit; }
   .drop { width: 100%; background: none; font: inherit; border: 1.5px dashed var(--drop-border); border-radius: 12px; padding: 34px 20px; text-align: center; color: var(--text-soft); cursor: pointer; display: flex; flex-direction: column; gap: 8px; align-items: center; }
   .drop:hover:enabled { border-color: var(--accent-deep); background: var(--accent-bg-soft); }
   .drop.off, .drop:disabled { opacity: .45; cursor: default; }
