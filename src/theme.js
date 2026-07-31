@@ -61,9 +61,16 @@ export const THEME_CSS = `
     --text-strong: #eafff4;
     --text-soft: #a9c4b6;
     --text-label: #9db8ab;
-    --text-muted: #5f7a6d;
-    --text-muted-2: #7d9c8c;
-    --text-faint: #43584d;
+    /* Raised so the small type they carry clears 4.5:1. --text-muted is the
+       most-used token in the app — every <th>, every stat label, every caption
+       — and at #5f7a6d it measured 3.80:1 on --surface and 4.05:1 on --bg.
+       --text-faint at #43584d measured 2.38:1 in the sidebar footer, under even
+       the 3:1 large-text floor. --text-muted-2 already passed at 5.93:1 and is
+       lifted only to keep a visible step above the new --text-muted, so the
+       four-tier grey ladder the palette is built on still reads as four tiers. */
+    --text-muted: #7a9486;
+    --text-muted-2: #8dab9c;
+    --text-faint: #708a7c;
     --text-nav: #8ba899;
 
     --accent: #7ee2ae;
@@ -86,6 +93,9 @@ export const THEME_CSS = `
     --btn-text: #baf3d6;
     --step-on-text: #baf3d6;
     --drop-border: #2b4033;
+    /* Behind the sections drawer, where the sidebar becomes one. Dark in both
+       themes: it is the page being put in shadow, not a surface of its own. */
+    --scrim: #04080699;
 
     --pos: #7ee2ae;
     --neg: #e0a24a;
@@ -133,7 +143,10 @@ export const THEME_CSS = `
     --text-label: #445a4e;
     --text-muted: #5a6f64;
     --text-muted-2: #4a5f54;
-    --text-faint: #5f7368;
+    /* The one light pair that missed: 4.49:1 on --surface-nav, i.e. the sidebar
+       footer, short of 4.5 by a rounding error. Everything else in this column
+       passes on the pairs that actually occur, so nothing else moves. */
+    --text-faint: #5c7065;
     --text-nav: #3d5147;
 
     --accent: #16794f;
@@ -156,6 +169,7 @@ export const THEME_CSS = `
     --btn-text: #ffffff;
     --step-on-text: #0f6b45;
     --drop-border: #a8c4b5;
+    --scrim: #1c2b2499;
 
     --pos: #16794f;
     --neg: #a8442a;
@@ -181,7 +195,9 @@ export const THEME_CSS = `
 export const CHART = {
   dark: {
     grid: "#1d2a24",
-    axis: "#5f7a6d",
+    /* 11px tick labels, so they answer to 4.5:1 like any other small text:
+       #5f7a6d measured 3.80:1 on the card they sit on. Mirrors --text-muted. */
+    axis: "#7a9486",
     zero: "#33463d",
     pos: "#46c98c",
     neg: "#e0a24a",
@@ -195,6 +211,10 @@ export const CHART = {
     crypto: "#57c491",
     property: "#28402f",
     mortgage: "#5c3c22",
+    /* Card colour, used as the gap in the diagonal hatch that marks money-out
+       bars — see ChartHatch in App.jsx. Sign has to survive being printed in
+       grey and being seen by someone who cannot separate the two hues. */
+    stripe: "#101a15",
   },
   light: {
     grid: "#dde6e0",
@@ -214,5 +234,9 @@ export const CHART = {
     crypto: "#93d2b3",
     property: "#9bb5a7",
     mortgage: "#c0714f",
+    /* In this column `pos` and `neg` measure 1.10:1 against one another — one
+       flat grey to a deuteranope — so the hatch is what actually carries the
+       sign here, not the hue. */
+    stripe: "#ffffff",
   },
 };
