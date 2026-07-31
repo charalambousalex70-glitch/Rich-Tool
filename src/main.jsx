@@ -67,9 +67,66 @@ function AuthScreen({ onDemo }) {
   );
 }
 
+/* A render throw used to leave a permanently blank page: nothing caught it and
+   there is no reset path in the app. Catch it, say so plainly, and offer the
+   reload. Nothing here touches the stored row — the data is not the suspect. */
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error("Ledgerline stopped:", error, info); }
+  render() {
+    if (!this.state.error) return this.props.children;
+    const detail = (this.state.error && this.state.error.message) || String(this.state.error);
+    return (
+      <div className="auth-wrap">
+        <div className="auth-card">
+          <div className="auth-brand">LEDGER<span>LINE</span></div>
+          <div className="auth-sub">Something went wrong on this page</div>
+          <p className="auth-note">
+            Ledgerline hit an error and stopped drawing the page. Your saved data has not been changed or
+            deleted — this went wrong while displaying it, not while storing it. Reloading usually clears it.
+          </p>
+          <div className="auth-msg err mono-s">{detail}</div>
+          <button className="auth-btn" onClick={() => window.location.reload()}>Reload the page</button>
+        </div>
+        <style>{THEME_CSS + AUTH_CSS}</style>
+      </div>
+    );
+  }
+}
+
+/* A failed load is not the same thing as a new account, and must never be
+   treated as one: seeding the demo model here and then autosaving it would
+   overwrite the real row. Ask instead. */
+function LoadErrorScreen({ detail, onRetry, onFresh }) {
+  return (
+    <div className="auth-wrap">
+      <div className="auth-card">
+        <div className="auth-brand">LEDGER<span>LINE</span></div>
+        <div className="auth-sub">We could not load your saved data</div>
+        <p className="auth-note">
+          Your data is still on the server. This is a problem reaching it — most often a dropped connection —
+          not a problem with the data itself. Nothing has been changed or deleted.
+        </p>
+        {detail && <div className="auth-msg err mono-s">{detail}</div>}
+        <button className="auth-btn" onClick={onRetry}>Try again</button>
+        <div className="auth-div" />
+        <button className="auth-link dim" onClick={onFresh}>
+          Or carry on in a fresh, empty-of-your-data model. Nothing you do in it will be saved, so what is
+          stored on the server stays exactly as it is.
+        </button>
+      </div>
+      <style>{THEME_CSS + AUTH_CSS}</style>
+    </div>
+  );
+}
+
 function Root() {
   const [session, setSession] = useState(null);
   const [boot, setBoot] = useState(undefined); // undefined = loading, null = fresh user
+  const [loadError, setLoadError] = useState(null); // load failed — distinct from "no row yet"
+  const [freshAnyway, setFreshAnyway] = useState(false); // chose to work unsaved after a failed load
+  const [attempt, setAttempt] = useState(0); // bumped by "Try again"
   const [demo, setDemo] = useState(!supabase); // no env vars -> demo automatically
   const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
   const timer = useRef(null);
@@ -86,13 +143,30 @@ function Root() {
   // load persisted state on sign-in
   useEffect(() => {
     if (!supabase || !session) return;
-    setBoot(undefined);
+    // A token refresh hands back a new session object and re-runs this effect.
+    // Once the user has chosen the fresh model, leave them in it — reloading
+    // underneath them would throw away everything they have typed since.
+    if (freshAnyway) return;
+    let cancelled = false;
+    setBoot(undefined); setLoadError(null);
     supabase.from("user_state").select("state").eq("user_id", session.user.id).maybeSingle()
       .then(({ data, error }) => {
-        if (error) { console.error(error); setBoot(null); return; }
+        if (cancelled) return;
+        if (error) {
+          // Do NOT fall through to boot=null: that seeds the demo model, and the
+          // first edit would autosave it straight over the user's real row.
+          console.error(error);
+          clearTimeout(timer.current);
+          latest.current = null; // drop any pending save so nothing can flush
+          setLoadError(error.message || "The server did not answer.");
+          return;
+        }
         setBoot(data ? data.state : null);
       });
-  }, [session]);
+    return () => { cancelled = true; };
+  }, [session, attempt, freshAnyway]);
+
+  const retryLoad = () => { setFreshAnyway(false); setLoadError(null); setBoot(undefined); setAttempt((a) => a + 1); };
 
   const flush = async () => {
     if (!supabase || !session || latest.current == null) return;
@@ -128,6 +202,22 @@ function Root() {
   );
 
   if (!session) return <AuthScreen onDemo={() => setDemo(true)} />;
+
+  if (loadError && !freshAnyway) return (
+    <LoadErrorScreen detail={loadError} onRetry={retryLoad} onFresh={() => setFreshAnyway(true)} />
+  );
+  // Deliberately no `onPersist`: this model cannot reach the stored row at all.
+  if (loadError && freshAnyway) return (
+    <>
+      <div className="shell-bar demo">
+        Could not load your saved data — this is a fresh model and nothing in it is being saved.
+        <button onClick={retryLoad}>Try loading again</button>
+      </div>
+      <App />
+      <style>{THEME_CSS + BAR_CSS}</style>
+    </>
+  );
+
   if (boot === undefined) return <div className="shell-load">Loading your data…<style>{THEME_CSS + BAR_CSS}</style></div>;
 
   return (
@@ -166,6 +256,9 @@ const AUTH_CSS = `
   .auth-msg { font-size: 12.5px; border-radius: 8px; padding: 8px 10px; }
   .auth-msg.err { background: var(--neg-bg-2); color: var(--neg); }
   .auth-msg.ok { background: var(--accent-bg-2); color: var(--accent); }
+  .auth-msg.mono-s { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 11.5px; word-break: break-word; }
+  .auth-note { color: var(--text-soft); font-size: 12.5px; line-height: 1.5; }
+  .auth-link { text-align: left; line-height: 1.45; }
 `;
 
 const BAR_CSS = `
@@ -181,4 +274,6 @@ const BAR_CSS = `
     font: 14px "Inter", system-ui, sans-serif; }
 `;
 
-createRoot(document.getElementById("root")).render(<Root />);
+createRoot(document.getElementById("root")).render(
+  <ErrorBoundary><Root /></ErrorBoundary>
+);

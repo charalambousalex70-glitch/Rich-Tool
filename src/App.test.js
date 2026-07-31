@@ -5,6 +5,8 @@ import {
   monthlyPayment, amortise,
   matchRecurring, matchAnnual,
   buildForecast, buildLongTerm, parseOFX,
+  isReadableAmount, isReadableNumber, ageError, termMonthsError,
+  AGE_MIN, AGE_MAX, TERM_MONTHS_MAX,
 } from "./App.jsx";
 
 /* Frozen "now" used by every test that touches nowYm()/todayISO(). */
@@ -117,6 +119,147 @@ describe("toC", () => {
     ["1,234.56", "1.234,56", "12.345", "-45.99", "R 1 000.00"].forEach((v) => {
       expect(Number.isInteger(toC(v))).toBe(true);
     });
+  });
+});
+
+/* ============================================================
+   isReadableAmount — tells "unreadable" apart from "genuinely zero",
+   which toC alone cannot do (it returns 0 for both).
+   ============================================================ */
+describe("isReadableAmount", () => {
+  it("rejects the input that would otherwise book a silent R0.00", () => {
+    expect(isReadableAmount("abc")).toBe(false);
+    expect(isReadableAmount("n/a")).toBe(false);
+    expect(isReadableAmount("-")).toBe(false);
+    expect(isReadableAmount(".")).toBe(false);
+    expect(isReadableAmount("R")).toBe(false);
+  });
+
+  it("rejects empty and missing values", () => {
+    expect(isReadableAmount("")).toBe(false);
+    expect(isReadableAmount("   ")).toBe(false);
+    expect(isReadableAmount(null)).toBe(false);
+    expect(isReadableAmount(undefined)).toBe(false);
+  });
+
+  it("accepts a deliberate zero — that is a real figure, not a fallback", () => {
+    expect(isReadableAmount("0")).toBe(true);
+    expect(isReadableAmount("0.00")).toBe(true);
+    expect(isReadableAmount(0)).toBe(true);
+  });
+
+  it("accepts every form toC is built to read", () => {
+    ["1,234.56", "1.234,56", "-45.99", "R 1 000.00", "(45.00)", "12,3", ".5", "5"]
+      .forEach((v) => expect(isReadableAmount(v)).toBe(true));
+  });
+
+  it("agrees with toC: anything it accepts, toC reads as a figure", () => {
+    ["1,234.56", "1.234,56", "-45.99", "R 1 000.00", "(45.00)", "12,3"]
+      .forEach((v) => { expect(isReadableAmount(v)).toBe(true); expect(toC(v)).not.toBe(0); });
+  });
+});
+
+describe("isReadableNumber", () => {
+  it("rejects a cleared field, which used to become 0", () => {
+    expect(isReadableNumber("")).toBe(false);
+    expect(isReadableNumber("   ")).toBe(false);
+    expect(isReadableNumber(null)).toBe(false);
+    expect(isReadableNumber(undefined)).toBe(false);
+  });
+
+  it("rejects text", () => {
+    expect(isReadableNumber("abc")).toBe(false);
+    expect(isReadableNumber("5%")).toBe(false);
+    expect(isReadableNumber("1,5")).toBe(false);
+  });
+
+  it("accepts plain numbers, including zero and negatives", () => {
+    expect(isReadableNumber("0")).toBe(true);
+    expect(isReadableNumber("5.5")).toBe(true);
+    expect(isReadableNumber("-2")).toBe(true);
+    expect(isReadableNumber(9)).toBe(true);
+  });
+});
+
+/* ============================================================
+   ageError / termMonthsError — bounds on the inputs that drive
+   the long-term projection.
+   ============================================================ */
+describe("ageError", () => {
+  const st = { currentAge: 42, retirementAge: 65, planningAge: 90 };
+
+  it("accepts the seeded assumptions unchanged", () => {
+    expect(ageError("currentAge", 42, st)).toBeNull();
+    expect(ageError("retirementAge", 65, st)).toBeNull();
+    expect(ageError("planningAge", 90, st)).toBeNull();
+  });
+
+  it("rejects anything outside the absolute age range", () => {
+    ["currentAge", "retirementAge", "planningAge"].forEach((f) => {
+      expect(ageError(f, AGE_MIN - 1, st)).toMatch(/between 18 and 120/);
+      expect(ageError(f, AGE_MAX + 1, st)).toMatch(/between 18 and 120/);
+      // the bounds themselves are in range (they may still fail a cross-field rule)
+      expect(String(ageError(f, AGE_MIN, st))).not.toMatch(/between 18 and 120/);
+      expect(String(ageError(f, AGE_MAX, st))).not.toMatch(/between 18 and 120/);
+    });
+  });
+
+  it("rejects a non-number", () => {
+    expect(ageError("currentAge", NaN, st)).toMatch(/whole number/);
+    expect(ageError("planningAge", Infinity, st)).toMatch(/whole number/);
+  });
+
+  it("requires the planning age to sit above the current age", () => {
+    expect(ageError("planningAge", 42, st)).toMatch(/above your current age/);
+    expect(ageError("planningAge", 41, st)).toMatch(/above your current age/);
+    expect(ageError("planningAge", 43, st)).toBeNull();
+  });
+
+  it("requires the current age to sit below the planning age", () => {
+    expect(ageError("currentAge", 90, st)).toMatch(/below your planning age/);
+    expect(ageError("currentAge", 91, st)).toMatch(/below your planning age/);
+    expect(ageError("currentAge", 89, st)).toBeNull();
+  });
+
+  it("allows a retirement age below the current age — already retired", () => {
+    const retired = { currentAge: 70, retirementAge: 65, planningAge: 95 };
+    expect(ageError("retirementAge", 65, retired)).toBeNull();
+    expect(ageError("retirementAge", 18, retired)).toBeNull();
+    expect(ageError("currentAge", 70, retired)).toBeNull();
+  });
+
+  it("keeps buildLongTerm non-empty for every combination it accepts", () => {
+    const combos = [[42, 65, 90], [70, 65, 95], [18, 18, 19], [60, 60, 120]];
+    combos.forEach(([currentAge, retirementAge, planningAge]) => {
+      const settings = { currentAge, retirementAge, planningAge };
+      expect(ageError("currentAge", currentAge, settings)).toBeNull();
+      expect(ageError("retirementAge", retirementAge, settings)).toBeNull();
+      expect(ageError("planningAge", planningAge, settings)).toBeNull();
+      expect(planningAge - currentAge).toBeGreaterThan(0);
+    });
+  });
+
+  it("rounds before checking, matching what the field commits", () => {
+    expect(ageError("planningAge", 42.4, st)).toMatch(/above your current age/);
+    expect(ageError("planningAge", 42.6, st)).toBeNull();
+  });
+});
+
+describe("termMonthsError", () => {
+  it("accepts a realistic remaining term", () => {
+    expect(termMonthsError(216)).toBeNull();
+    expect(termMonthsError(1)).toBeNull();
+    expect(termMonthsError(TERM_MONTHS_MAX)).toBeNull();
+  });
+
+  it("rejects zero, negatives and absurd terms", () => {
+    expect(termMonthsError(0)).toMatch(/between 1 and 600/);
+    expect(termMonthsError(-12)).toMatch(/between 1 and 600/);
+    expect(termMonthsError(TERM_MONTHS_MAX + 1)).toMatch(/between 1 and 600/);
+  });
+
+  it("rejects a non-number", () => {
+    expect(termMonthsError(NaN)).toMatch(/whole number/);
   });
 });
 

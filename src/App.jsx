@@ -41,6 +41,69 @@ export const C0 = (cents, cur = "R") => {
   return `${neg ? "\u2212" : ""}${cur}${Math.round(Math.abs(cents) / 100).toLocaleString("en-US")}`;
 };
 
+/* ============================================================
+   INPUT VALIDATION \u2014 toC and parseFloat both fall back to 0, so
+   typing "abc" books R0.00 without saying anything. These decide
+   whether a field is readable *before* it is committed; toC itself
+   is untouched, because the import pipeline depends on its
+   forgiveness.
+   ============================================================ */
+
+/** True when toC will read a real figure out of `v` (and not fall back to 0). */
+export const isReadableAmount = (v) => {
+  if (v === null || v === undefined) return false;
+  const raw = String(v).trim();
+  if (raw === "") return false;
+  const s = raw.replace(/[^\d.\-,]/g, ""); // the same strip toC performs
+  return /\d/.test(s) && !isNaN(parseFloat(s.replace(/,/g, "")));
+};
+
+/** True when `v` is a plain number \u2014 used for the percentage/age fields. */
+export const isReadableNumber = (v) => {
+  if (v === null || v === undefined) return false;
+  const raw = String(v).trim();
+  if (raw === "") return false;
+  return Number.isFinite(Number(raw));
+};
+
+/* Ages are bounded 18-120: below 18 there is no working life to model, above
+   120 the projection is fiction and the annual table grows without purpose. */
+export const AGE_MIN = 18;
+export const AGE_MAX = 120;
+/** 50 years \u2014 longer than any mortgage term a lender writes. */
+export const TERM_MONTHS_MAX = 600;
+
+/**
+ * Validates one age edit against the other two. Returns a plain-language
+ * reason to reject, or null to accept.
+ *
+ * planningAge must sit above currentAge, otherwise buildLongTerm projects zero
+ * years and the Long-Term Plan has nothing to show.
+ *
+ * retirementAge is deliberately NOT checked against currentAge: a retirement
+ * age below the current age is simply someone who has already retired, and
+ * buildLongTerm handles it correctly (every projected year counts as retired).
+ */
+export const ageError = (field, value, settings) => {
+  if (!Number.isFinite(value)) return "Enter a whole number.";
+  const n = Math.round(value);
+  if (n < AGE_MIN || n > AGE_MAX) return `Enter an age between ${AGE_MIN} and ${AGE_MAX}.`;
+  if (field === "planningAge" && n <= settings.currentAge)
+    return `The plan needs somewhere to run to. Enter a planning age above your current age of ${settings.currentAge}.`;
+  if (field === "currentAge" && n >= settings.planningAge)
+    return `Your current age has to be below your planning age of ${settings.planningAge}. Raise the planning age first.`;
+  return null;
+};
+
+/** Validates a mortgage term in months. Returns a reason to reject, or null. */
+export const termMonthsError = (value) => {
+  if (!Number.isFinite(value)) return "Enter a whole number of months.";
+  const n = Math.round(value);
+  if (n < 1 || n > TERM_MONTHS_MAX)
+    return `Enter a term between 1 and ${TERM_MONTHS_MAX} months (50 years).`;
+  return null;
+};
+
 /* ---- dates ---- */
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const nowYm = () => todayISO().slice(0, 7);
@@ -584,24 +647,61 @@ const Stat = ({ label, value, sub, tone, onClick }) => (
 const Amt = ({ c, cur, zero }) => (
   <span className={`amt ${c > 0 ? "pos" : c < 0 ? "neg" : ""}`}>{zero && c === 0 ? "—" : C(c, cur)}</span>
 );
+/* An unreadable entry is held in the field with a reason, never committed as a
+   silent zero. The wrapper only appears while there is something to say, so a
+   valid field lays out exactly as it did before. */
+const withError = (input, err) =>
+  err ? <span className="in-wrap">{input}<span className="in-err">{err}</span></span> : input;
+
 const NumInput = ({ valueC, onCommit, className = "" }) => {
   const [v, setV] = useState(null);
-  return (
-    <input className={`num-in ${className}`} value={v === null ? (valueC / 100).toFixed(2) : v}
-      onChange={(e) => setV(e.target.value)}
-      onBlur={() => { if (v !== null) { onCommit(toC(v)); setV(null); } }}
-      onKeyDown={(e) => e.key === "Enter" && e.target.blur()} />
+  const [err, setErr] = useState(null);
+  return withError(
+    <input className={`num-in ${className} ${err ? "invalid" : ""}`} value={v === null ? (valueC / 100).toFixed(2) : v}
+      onChange={(e) => { setV(e.target.value); setErr(null); }}
+      onBlur={() => {
+        if (v === null) return;
+        if (!isReadableAmount(v)) { setErr("Not a number — nothing was saved."); return; }
+        setErr(null); onCommit(toC(v)); setV(null);
+      }}
+      onKeyDown={(e) => e.key === "Enter" && e.target.blur()} />,
+    err
   );
 };
-const PctInput = ({ value, onCommit, step = 0.1 }) => {
+const PctInput = ({ value, onCommit, step = 0.1, min, max, validate }) => {
   const [v, setV] = useState(null);
-  return (
-    <input className="num-in pct" type="number" step={step} value={v === null ? value : v}
-      onChange={(e) => setV(e.target.value)}
-      onBlur={() => { if (v !== null) { onCommit(parseFloat(v) || 0); setV(null); } }}
-      onKeyDown={(e) => e.key === "Enter" && e.target.blur()} />
+  const [err, setErr] = useState(null);
+  return withError(
+    <input className={`num-in pct ${err ? "invalid" : ""}`} type="number" step={step} min={min} max={max}
+      value={v === null ? value : v}
+      onChange={(e) => { setV(e.target.value); setErr(null); }}
+      onBlur={() => {
+        if (v === null) return;
+        if (!isReadableNumber(v)) { setErr("Not a number — nothing was saved."); return; }
+        const n = Number(v);
+        const reason = validate ? validate(n) : null;
+        if (reason) { setErr(reason); return; }
+        setErr(null); onCommit(n); setV(null);
+      }}
+      onKeyDown={(e) => e.key === "Enter" && e.target.blur()} />,
+    err
   );
 };
+/* Deleting a row is immediate and there is no undo, so ✕ arms the row and a
+   second click commits it. Two mini buttons in place of the ✕ — no modal
+   library, no new dependency, and the row never moves. */
+const DeleteCell = ({ what, onDelete }) => {
+  const [armed, setArmed] = useState(false);
+  if (!armed) return <button className="mini" title={`Delete “${what}”`} onClick={() => setArmed(true)}>✕</button>;
+  return (
+    <span className="confirm">
+      <span className="confirm-q">Delete “{what}”?</span>
+      <button className="mini danger" onClick={() => { setArmed(false); onDelete(); }}>Delete</button>
+      <button className="mini" onClick={() => setArmed(false)}>Keep</button>
+    </span>
+  );
+};
+
 const chartTip = (cur) => ({ payload, label, active }) =>
   active && payload && payload.length ? (
     <div className="tip">
@@ -760,16 +860,31 @@ function Transactions({ state, update, cur, ym, txnFilter, setTxnFilter, cats, c
 }
 
 function AddTxn({ state, update, ym, cats }) {
-  const [d, setD] = useState({ date: `${ym}-15`, desc: "", amount: "", accountId: state.accounts[0].id, categoryId: "cat_uncat" });
+  const first = state.accounts[0];
+  const [d, setD] = useState({ date: `${ym}-15`, desc: "", amount: "", accountId: first ? first.id : "", categoryId: "cat_uncat" });
+  // A transaction has to land in an account, and this model holds none.
+  if (!first) return (
+    <div className="add-row">
+      <span className="muted-s">This model has no accounts, so there is nowhere to record a transaction.</span>
+      <button className="btn" disabled>Add</button>
+    </div>
+  );
+  // the account may have been added or removed since this row was first drawn
+  const accountId = state.accounts.some((a) => a.id === d.accountId) ? d.accountId : first.id;
+  const amountBad = d.amount !== "" && !isReadableAmount(d.amount);
   return (
     <div className="add-row">
       <input type="date" value={d.date} onChange={(e) => setD({ ...d, date: e.target.value })} />
       <input placeholder="Description" value={d.desc} onChange={(e) => setD({ ...d, desc: e.target.value })} style={{ flex: 1 }} />
-      <select value={d.accountId} onChange={(e) => setD({ ...d, accountId: e.target.value })}>{state.accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
+      <select value={accountId} onChange={(e) => setD({ ...d, accountId: e.target.value })}>{state.accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
       <select value={d.categoryId} onChange={(e) => setD({ ...d, categoryId: e.target.value })}>{cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
-      <input placeholder="Amount (− = out)" value={d.amount} onChange={(e) => setD({ ...d, amount: e.target.value })} style={{ width: 130 }} />
-      <button className="btn" disabled={!d.desc || !d.amount} onClick={() => {
-        update((s) => ({ ...s, txns: [...s.txns, { id: uid("txn"), accountId: d.accountId, date: d.date, desc: d.desc, amountC: toC(d.amount), categoryId: d.categoryId, source: "manual" }] }), "manual", `Manual transaction "${d.desc}" ${d.amount}`);
+      <span className="in-wrap">
+        <input className={amountBad ? "invalid" : ""} placeholder="Amount (− = out)" value={d.amount}
+          onChange={(e) => setD({ ...d, amount: e.target.value })} style={{ width: 130 }} />
+        {amountBad && <span className="in-err">Not a number.</span>}
+      </span>
+      <button className="btn" disabled={!d.desc.trim() || !isReadableAmount(d.amount)} onClick={() => {
+        update((s) => ({ ...s, txns: [...s.txns, { id: uid("txn"), accountId, date: d.date, desc: d.desc, amountC: toC(d.amount), categoryId: d.categoryId, source: "manual" }] }), "manual", `Manual transaction "${d.desc}" ${d.amount}`);
         setD({ ...d, desc: "", amount: "" });
       }}>Add</button>
     </div>
@@ -881,7 +996,7 @@ function Recurring({ state, update, cur, ym, cats }) {
                   <td className="r"><NumInput valueC={r.amountC} onCommit={(c) => update((s) => ({ ...s, recurring: s.recurring.map((x) => x.id === r.id ? { ...x, amountC: c } : x) }), "edit", `Recurring "${r.name}" amount → ${C(c, cur)}`)} /></td>
                   <td>{isTransfer ? <span className="chip transfer">transfer</span> : m.paid ? <span className="chip ok">actualised {C(m.actualC, cur)}</span> : <span className="chip pending">pending</span>}</td>
                   <td className="r">{m.paid && !isTransfer ? <span className={`amt ${m.material ? "warn" : "muted-s"}`}>{m.varianceC === 0 ? "on plan" : C(m.varianceC, cur)}{m.material ? " ⚠" : ""}</span> : "—"}</td>
-                  <td className="r"><button className="mini" onClick={() => update((s) => ({ ...s, recurring: s.recurring.filter((x) => x.id !== r.id) }), "edit", `Removed recurring item "${r.name}"`)}>✕</button></td>
+                  <td className="r"><DeleteCell what={r.name} onDelete={() => update((s) => ({ ...s, recurring: s.recurring.filter((x) => x.id !== r.id) }), "edit", `Removed recurring item "${r.name}"`)} /></td>
                 </tr>
               );
             })}
@@ -935,7 +1050,7 @@ function Annual({ state, update, cur, ym, cats, goTxns }) {
                   <td><PctInput value={a.escalationPct} onCommit={(v) => update((s) => ({ ...s, annual: s.annual.map((x) => x.id === a.id ? { ...x, escalationPct: v } : x) }))} /></td>
                   <td>{m.paid ? <button className="chip ok click" onClick={() => goTxns({ category: a.categoryId })}>paid {C(m.actualC, cur)}</button> : <span className="chip pending">due {MONTHS[a.month - 1]}</span>}</td>
                   <td className="r">{m.paid ? <Amt c={m.varianceC} cur={cur} zero /> : "—"}</td>
-                  <td className="r"><button className="mini" onClick={() => update((s) => ({ ...s, annual: s.annual.filter((x) => x.id !== a.id) }), "edit", `Removed annual item "${a.name}"`)}>✕</button></td>
+                  <td className="r"><DeleteCell what={a.name} onDelete={() => update((s) => ({ ...s, annual: s.annual.filter((x) => x.id !== a.id) }), "edit", `Removed annual item "${a.name}"`)} /></td>
                 </tr>
               );
             })}
@@ -969,7 +1084,7 @@ function Compensation({ state, update, cur, palette }) {
         <div className="form">
           <label>Outstanding balance<NumInput valueC={mortgage.balanceC} onCommit={(c) => setMort({ balanceC: c }, `Mortgage balance → ${C(c, cur)}`)} /></label>
           <label>Interest rate %<PctInput value={mortgage.ratePct} onCommit={(v) => setMort({ ratePct: v }, `Mortgage rate → ${v}%`)} step={0.05} /></label>
-          <label>Remaining term (months)<PctInput value={mortgage.termMonths} onCommit={(v) => setMort({ termMonths: Math.round(v) }, `Mortgage term → ${v} months`)} step={1} /></label>
+          <label>Remaining term (months)<PctInput value={mortgage.termMonths} onCommit={(v) => setMort({ termMonths: Math.round(v) }, `Mortgage term → ${v} months`)} step={1} min={1} max={TERM_MONTHS_MAX} validate={termMonthsError} /></label>
           <label>Fixed rate expires<input type="month" className="cell-in" value={mortgage.fixedExpiry} onChange={(e) => setMort({ fixedExpiry: e.target.value }, "Fixed-rate expiry changed")} /></label>
           <label>Actual monthly payment (override, 0 = computed)<NumInput valueC={mortgage.paymentOverrideC || 0} onCommit={(c) => setMort({ paymentOverrideC: c || null }, `Mortgage payment override → ${C(c, cur)}`)} /></label>
           <label>Property value (estimate)<NumInput valueC={mortgage.propertyValueC || 0} onCommit={(c) => setMort({ propertyValueC: c }, `Property value → ${C(c, cur)}`)} /></label>
@@ -1055,6 +1170,22 @@ function Forecast({ state, update, cur, fc, fcScen, palette }) {
 
 function LongTerm({ state, update, cur, lt, ltScen, palette }) {
   const st = state.settings;
+  /* The projection runs from the current age to the planning age, so if the
+     planning age is not above the current age there are no years to draw.
+     The age fields refuse that combination now, but a model saved before they
+     did can still arrive here — say why instead of blanking the screen. */
+  if (!lt.rows.length) return (
+    <div className="grid">
+      <Card className="span3" title="Long-term plan">
+        <div className="banner warn">
+          There is nothing to project. This plan runs from your current age to your planning age, and your
+          planning age ({st.planningAge}) is not above your current age ({st.currentAge}) — so the plan covers
+          no years at all. Set a planning age above {st.currentAge} under Settings → Assumptions and this page
+          will fill in.
+        </div>
+      </Card>
+    </div>
+  );
   const chart = lt.rows.map((r, i) => ({ name: r.age, cash: r.cashC, invest: r.investC, crypto: r.cryptoC, property: r.propertyC, mort: -r.mortC, nw: r.netWorthC, scen: ltScen ? ltScen.rows[i]?.netWorthC : undefined }));
   return (
     <div className="grid">
@@ -1086,7 +1217,9 @@ function LongTerm({ state, update, cur, lt, ltScen, palette }) {
         </ResponsiveContainer>
       </Card>
       <Card className="span3" title="Annual projection" right={
-        <label className="muted-s">Planning age <PctInput value={st.planningAge} step={1} onCommit={(v) => update((s) => ({ ...s, settings: { ...s.settings, planningAge: Math.round(v) } }), "edit", `Planning age → ${v}`)} /></label>
+        <label className="muted-s">Planning age <PctInput value={st.planningAge} step={1} min={AGE_MIN} max={AGE_MAX}
+          validate={(v) => ageError("planningAge", v, st)}
+          onCommit={(v) => update((s) => ({ ...s, settings: { ...s.settings, planningAge: Math.round(v) } }), "edit", `Planning age → ${v}`)} /></label>
       }>
         <div className="scroll-y">
           <table className="tbl">
@@ -1121,10 +1254,13 @@ function Imports({ state, update, cur, cats, catName, accName }) {
   const [step, setStep] = useState("upload"); // upload | map | review
   const [file, setFile] = useState(null);
   const [raw, setRaw] = useState(null); // {headers, rows} or {ofx:[...]}
-  const [map, setMap] = useState({ date: "", desc: "", amount: "", debit: "", credit: "", invert: false, accountId: state.accounts[0].id, mode: "single" });
+  const firstAccount = state.accounts[0];
+  const [map, setMap] = useState({ date: "", desc: "", amount: "", debit: "", credit: "", invert: false, accountId: firstAccount ? firstAccount.id : "", mode: "single" });
   const [staged, setStaged] = useState([]);
   const [err, setErr] = useState("");
   const fileRef = useRef();
+  // imported transactions have to land in an account, and this model holds none
+  const noAccounts = !firstAccount;
 
   const applyRules = (desc) => {
     const U = desc.toUpperCase();
@@ -1232,7 +1368,7 @@ function Imports({ state, update, cur, cats, catName, accName }) {
       txns: [...s.txns, ...inc.map((t) => ({ id: uid("txn"), accountId: t.accountId, date: t.date, desc: t.desc, amountC: t.amountC, categoryId: t.categoryId, source: "import", batchId }))],
       batches: [{ id: batchId, filename: file ? file.name : "upload", when: new Date().toISOString().slice(0, 16).replace("T", " "), count: inc.length, accountIds: [map.accountId] }, ...s.batches],
     }), "import", `Committed ${inc.length} transactions from "${file ? file.name : "upload"}" (${staged.length - inc.length} skipped)`);
-    setStep("upload"); setStaged([]); setRaw(null); setFile(null);
+    setStep("upload"); setStaged([]); setRaw(null); setFile(null); setErr("");
   };
 
   const stats = {
@@ -1254,9 +1390,10 @@ function Imports({ state, update, cur, cats, catName, accName }) {
       {step === "upload" && (
         <>
           <Card className="span2" title="Upload a statement export">
-            <div className="drop" onClick={() => fileRef.current.click()}
+            {noAccounts && <div className="banner warn">This model has no accounts, so there is nowhere for imported transactions to land. Importing is switched off until it has one.</div>}
+            <div className={`drop ${noAccounts ? "off" : ""}`} onClick={() => { if (!noAccounts) fileRef.current.click(); }}
               onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => { e.preventDefault(); if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); }}>
+              onDrop={(e) => { e.preventDefault(); if (!noAccounts && e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); }}>
               <div className="drop-ic">⇪</div>
               <div>Drop a bank / credit-card / investment export here, or click to browse</div>
               <div className="muted-s">CSV · XLSX · OFX/QFX &nbsp;·&nbsp; <span className="chip warn">PDF — experimental</span></div>
@@ -1264,8 +1401,8 @@ function Imports({ state, update, cur, cats, catName, accName }) {
             </div>
             <div className="form" style={{ marginTop: 12 }}>
               <label>Import into account
-                <select className="cat-sel" value={map.accountId} onChange={(e) => setMap({ ...map, accountId: e.target.value })}>
-                  {state.accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                <select className="cat-sel" value={map.accountId} disabled={noAccounts} onChange={(e) => setMap({ ...map, accountId: e.target.value })}>
+                  {noAccounts ? <option value="">No accounts</option> : state.accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
                 </select>
               </label>
             </div>
@@ -1281,7 +1418,7 @@ function Imports({ state, update, cur, cats, catName, accName }) {
                     <tr key={r.id}>
                       <td><input className="cell-in mono" value={r.pattern} onChange={(e) => update((s) => ({ ...s, rules: s.rules.map((x) => x.id === r.id ? { ...x, pattern: e.target.value } : x) }))} /></td>
                       <td><select className="cat-sel" value={r.categoryId} onChange={(e) => update((s) => ({ ...s, rules: s.rules.map((x) => x.id === r.id ? { ...x, categoryId: e.target.value } : x) }), "rule", `Rule "${r.pattern}" → ${catName(e.target.value)}`)}>{cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></td>
-                      <td><button className="mini" onClick={() => update((s) => ({ ...s, rules: s.rules.filter((x) => x.id !== r.id) }), "rule", `Deleted rule "${r.pattern}"`)}>✕</button></td>
+                      <td><DeleteCell what={r.pattern} onDelete={() => update((s) => ({ ...s, rules: s.rules.filter((x) => x.id !== r.id) }), "rule", `Deleted rule "${r.pattern}"`)} /></td>
                     </tr>
                   ))}
                 </tbody>
@@ -1348,6 +1485,9 @@ function Imports({ state, update, cur, cats, catName, accName }) {
         <Card className="span3" title="Review staged transactions" right={
           <span className="muted-s">{stats.inc} to commit · <span className="warn-t">{stats.dup} likely duplicates</span> · <span className="warn-t">{stats.low} low-confidence</span></span>
         }>
+          {/* set by runMapping when rows failed to map — it used to be written
+              and then immediately stepped past, so nobody ever saw it */}
+          {err && <div className="banner warn">{err}</div>}
           <div className="banner">Nothing has been saved yet. Duplicates were auto-deselected; low-confidence categorisations are flagged <span className="chip warn">low</span> — fix them here or add a merchant rule so next month's import lands clean.</div>
           <div className="scroll-y" style={{ maxHeight: 420 }}>
             <table className="tbl">
@@ -1375,7 +1515,7 @@ function Imports({ state, update, cur, cats, catName, accName }) {
             </table>
           </div>
           <div className="actions">
-            <button className="btn ghost" onClick={() => setStep(raw ? "map" : "upload")}>← Back</button>
+            <button className="btn ghost" onClick={() => { setErr(""); setStep(raw ? "map" : "upload"); }}>← Back</button>
             <button className="btn" disabled={!stats.inc} onClick={commit}>Commit {stats.inc} transactions</button>
           </div>
         </Card>
@@ -1395,9 +1535,14 @@ function Settings({ state, update, cur, fc, lt, catName, accName, theme, setThem
       <Card title="Assumptions">
         <div className="form">
           <label>Currency symbol<input className="cell-in" style={{ width: 60 }} value={st.currency} onChange={(e) => set({ currency: e.target.value })} /></label>
-          <label>Current age<PctInput value={st.currentAge} step={1} onCommit={(v) => set({ currentAge: Math.round(v) }, `Current age → ${v}`)} /></label>
-          <label>Retirement age<PctInput value={st.retirementAge} step={1} onCommit={(v) => set({ retirementAge: Math.round(v) }, `Retirement age → ${v}`)} /></label>
-          <label>Planning age (horizon)<PctInput value={st.planningAge} step={1} onCommit={(v) => set({ planningAge: Math.round(v) }, `Planning age → ${v}`)} /></label>
+          <label>Current age<PctInput value={st.currentAge} step={1} min={AGE_MIN} max={AGE_MAX}
+            validate={(v) => ageError("currentAge", v, st)} onCommit={(v) => set({ currentAge: Math.round(v) }, `Current age → ${v}`)} /></label>
+          {/* A retirement age below the current age is a valid answer — it means
+              already retired — so it is bounded only by the absolute age range. */}
+          <label>Retirement age<PctInput value={st.retirementAge} step={1} min={AGE_MIN} max={AGE_MAX}
+            validate={(v) => ageError("retirementAge", v, st)} onCommit={(v) => set({ retirementAge: Math.round(v) }, `Retirement age → ${v}`)} /></label>
+          <label>Planning age (horizon)<PctInput value={st.planningAge} step={1} min={AGE_MIN} max={AGE_MAX}
+            validate={(v) => ageError("planningAge", v, st)} onCommit={(v) => set({ planningAge: Math.round(v) }, `Planning age → ${v}`)} /></label>
           <label>Inflation %/yr<PctInput value={st.inflationPct} onCommit={(v) => set({ inflationPct: v }, `Inflation → ${v}%`)} /></label>
           <label>Investment return %/yr<PctInput value={st.investReturnPct} onCommit={(v) => set({ investReturnPct: v }, `Investment return → ${v}%`)} /></label>
           <label>Crypto return %/yr<PctInput value={st.cryptoReturnPct} onCommit={(v) => set({ cryptoReturnPct: v }, `Crypto return → ${v}%`)} /></label>
@@ -1525,6 +1670,11 @@ const CSS = `
   .cell-in.day { width: 54px; }
   .num-in { width: 110px; text-align: right; }
   .num-in.pct { width: 74px; }
+  input.invalid, input.invalid:focus { border-color: var(--neg); }
+  .in-wrap { display: inline-flex; flex-direction: column; gap: 3px; align-items: flex-end; }
+  .in-err { font-size: 11px; line-height: 1.3; color: var(--neg); max-width: 220px; text-align: right; }
+  .form .in-wrap, .add-row .in-wrap { align-items: flex-start; }
+  .form .in-err, .add-row .in-err { text-align: left; }
   .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .filters input { width: 170px; }
   .form { display: flex; flex-direction: column; gap: 10px; }
@@ -1541,6 +1691,10 @@ const CSS = `
   .btn.ghost:hover { color: var(--text); border-color: var(--accent-deep); }
   .mini { background: transparent; border: 1px solid transparent; color: var(--text-muted); border-radius: 5px; padding: 2px 7px; cursor: pointer; font-size: 12px; }
   .mini:hover { color: var(--accent); border-color: var(--border-strong); }
+  .mini.danger { color: var(--neg); border-color: var(--neg-border); }
+  .mini.danger:hover { color: var(--neg); background: var(--neg-bg); }
+  .confirm { display: inline-flex; gap: 6px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
+  .confirm-q { font-size: 11.5px; color: var(--text-soft); }
 
   .banner { grid-column: span 3; background: var(--accent-bg-banner); border: 1px solid var(--accent-border); color: var(--accent-text-soft); border-radius: 10px; padding: 10px 14px; font-size: 13px; margin-bottom: 12px; }
   .banner.warn { background: var(--neg-bg); border-color: var(--neg-border); color: var(--neg-text-soft); }
@@ -1569,6 +1723,8 @@ const CSS = `
   .step-n { width: 22px; height: 22px; border-radius: 50%; border: 1px solid currentColor; display: grid; place-items: center; font-size: 11px; flex: none; }
   .drop { border: 1.5px dashed var(--drop-border); border-radius: 12px; padding: 34px 20px; text-align: center; color: var(--text-soft); cursor: pointer; display: flex; flex-direction: column; gap: 8px; align-items: center; }
   .drop:hover { border-color: var(--accent-deep); background: var(--accent-bg-soft); }
+  .drop.off { opacity: .45; cursor: default; }
+  .drop.off:hover { border-color: var(--drop-border); background: none; }
   .drop-ic { font-size: 26px; color: var(--accent-strong); }
 
   /* scenario */
