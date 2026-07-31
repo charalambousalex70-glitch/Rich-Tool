@@ -594,7 +594,9 @@ export default function App({ boot = null, onPersist = null }) {
             {k === "imports" && <span className="nav-badge">{state.batches.length}</span>}
           </button>
         ))}
-        <div className="nav-foot">Prototype · in-memory data<br />Supabase-ready schema</div>
+        {/* "in-memory" was flatly untrue for a signed-in user, whose every edit
+            is saved. Say what is true of both cases instead. */}
+        <div className="nav-foot">Signed in, every change is saved to your account.<br />In demo mode nothing is saved.</div>
       </aside>
 
       <main className="main">
@@ -608,8 +610,11 @@ export default function App({ boot = null, onPersist = null }) {
               {ym !== nowYm() && <button className="today" onClick={() => setYm(nowYm())}>today</button>}
             </div>
           )}
-          <div className="scen-pill" data-on={state.scenario.enabled}>
-            {state.scenario.enabled ? "SCENARIO OVERLAY ON" : "BASE CASE"}
+          <div className="scen-pill" data-on={state.scenario.enabled}
+            title={state.scenario.enabled
+              ? "A what-if scenario is switched on. Its figures are drawn alongside your own on the Forecast and Long-Term Plan pages — your saved model is not changed."
+              : "Everything shown is your own figures. Set up a what-if under Forecast or Long-Term Plan to compare against them."}>
+            {state.scenario.enabled ? "SCENARIO ON" : "NO SCENARIO"}
           </div>
         </header>
 
@@ -637,9 +642,13 @@ const Card = ({ title, right, children, className = "" }) => (
     {children}
   </section>
 );
-const Stat = ({ label, value, sub, tone, onClick }) => (
+/* `help` hangs a hover explanation off the label — every stat on this app shows
+   a number whose derivation is invisible, and there is no room to spell it out
+   in a 170px tile. */
+const Help = ({ text }) => <span className="help" title={text}>?</span>;
+const Stat = ({ label, value, sub, tone, onClick, help }) => (
   <div className={`stat ${onClick ? "click" : ""}`} onClick={onClick}>
-    <div className="stat-label">{label}</div>
+    <div className="stat-label">{label}{help && <Help text={help} />}</div>
     <div className={`stat-value ${tone || ""}`}>{value}</div>
     {sub && <div className="stat-sub">{sub}</div>}
   </div>
@@ -710,6 +719,28 @@ const chartTip = (cur) => ({ payload, label, active }) =>
     </div>
   ) : null;
 
+/* ---- plain words for the internal tokens the model works in ----
+   buildForecast only ever writes "plan" or "blend" into `mode` (there is no
+   reachable "actual" month), so only those two are given words here. */
+const BASIS_WORD = { plan: "planned", blend: "actual + planned" };
+const BASIS_HELP = {
+  plan: "Nothing has happened yet in this month, so every figure comes from your plan: recurring items, any annual item due, and the bonus if it falls here.",
+  blend: "This month mixes money already in and out of your accounts with what is still expected before month end. Items you have not paid yet are still counted at their planned amount.",
+};
+const basisLegend = (
+  <div className="legend">
+    <span><span className="chip pending">{BASIS_WORD.blend}</span> the current month — money already spent and received, plus what is still expected before month end</span>
+    <span><span className="chip ghost">{BASIS_WORD.plan}</span> every later month — entirely your plan, nothing has happened yet</span>
+  </div>
+);
+
+/* Mirrors the thresholds already in the code — stated so the ⚠ and the amber
+   are not a mystery. matchRecurring: Math.max(|amountC| * 0.1, 10000).
+   Forecast "vs plan": Math.abs(varianceC) > Math.abs(planNet) * 0.1. */
+const recurringVarianceHelp = (cur) =>
+  `The gap between what you planned and what actually went through. Flagged ⚠ once the gap is more than 10% of the planned amount, or ${C0(10000, cur)} — whichever is the larger.`;
+const forecastVarianceHelp = "How far this month has landed from the plan. Shown in amber once the gap is more than 10% of the planned net for the month.";
+
 /* ============================================================
    PAGES
    ============================================================ */
@@ -729,14 +760,21 @@ function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut
   return (
     <div className="grid">
       <div className="stat-row">
-        <Stat label="Net worth" value={C0(netWorth.total, cur)} sub={`${C0(netWorth.assets, cur)} assets · ${C0(netWorth.liab, cur)} liabilities`} tone="pos" />
-        <Stat label={`Income · ${ymShort(ym)}`} value={C0(monthIncome, cur)} tone="pos" onClick={() => goTxns({ search: "", category: "all" })} />
-        <Stat label={`Spend · ${ymShort(ym)}`} value={C0(monthSpend, cur)} tone="neg" sub={`${spendPct}% of ${C0(budgetOut, cur)} budgeted`} onClick={() => goTxns({})} />
-        <Stat label="12-mo forecast net" value={C0(fc.rows[11].cum, cur)} sub="cumulative cashflow" tone={fc.rows[11].cum >= 0 ? "pos" : "neg"} />
-        <Stat label="Depletion check" value={lt.depletionAge ? `age ${lt.depletionAge}` : "clear"} sub={lt.depletionAge ? "assets exhausted" : `to age ${state.settings.planningAge}`} tone={lt.depletionAge ? "warn" : "pos"} />
+        <Stat label="Net worth" value={C0(netWorth.total, cur)} sub={`${C0(netWorth.assets, cur)} assets · ${C0(netWorth.liab, cur)} liabilities`} tone="pos"
+          help={"Everything you own, less everything you owe: account balances, plus the property value, less the mortgage balance (both set under Compensation). The two kinds of account balance look the same here but are not: bank and credit-card balances are the opening balance plus every transaction since, while investment and crypto balances are simply the last figure you entered yourself under Accounts, so they only move when you update them."} />
+        <Stat label={`Income · ${ymShort(ym)}`} value={C0(monthIncome, cur)} tone="pos" onClick={() => goTxns({ search: "", category: "all" })}
+          help={"Money in this month, added up from the transactions in the model. Money moved between your own accounts is left out, so a transfer in is not counted as income. Click to see the transactions."} />
+        <Stat label={`Spend · ${ymShort(ym)}`} value={C0(monthSpend, cur)} tone="neg" sub={`${spendPct}% of ${C0(budgetOut, cur)} budgeted`} onClick={() => goTxns({})}
+          help={"Money out this month, added up from the transactions in the model. The budget it is measured against is your recurring expense items plus any annual item falling in this month. Money moved between your own accounts is left out of both figures. Click to see the transactions."} />
+        <Stat label="12-mo forecast net" value={C0(fc.rows[11].cum, cur)} sub="the 12 months added up" tone={fc.rows[11].cum >= 0 ? "pos" : "neg"}
+          help={"The running total of the next 12 monthly nets from the Forecast page. It is how much better or worse off the year leaves you — not a balance, and not what you will have in the bank."} />
+        <Stat label="Retirement depletion" value={lt.depletionAge ? `age ${lt.depletionAge}` : "clear"}
+          sub={lt.depletionAge ? "assets exhausted" : `retired years only, to age ${state.settings.planningAge}`} tone={lt.depletionAge ? "warn" : "pos"}
+          help={`This only looks at the retired years. It reports the first year, at or after your retirement age of ${state.settings.retirementAge}, in which your cash, investments and crypto together fall to zero. It does not check the years before you retire — so "clear" does not mean you cannot run short while still working. Your property is not counted either, because you would have to sell it to spend it.`} />
       </div>
 
-      <Card title="12-month cashflow ribbon" className="span2" right={<span className="muted-s">actual → blend → plan</span>}>
+      <Card title="12-month cashflow ribbon" className="span2"
+        right={<span className="muted-s" title={`${BASIS_HELP.blend}\n\n${BASIS_HELP.plan}`}>solid bar = actual + planned · pale = planned</span>}>
         <ResponsiveContainer width="100%" height={210}>
           <ComposedChart data={fc.rows.map((r) => ({ ...r, name: ymShort(r.ym) }))}>
             <CartesianGrid stroke={palette.grid} vertical={false} />
@@ -929,7 +967,8 @@ function Accounts({ state, update, cur, goTxns, palette }) {
                 </ResponsiveContainer>
                 {isSnap ? (
                   <div className="recon">
-                    <div className="muted-s">Manual balance snapshot</div>
+                    <div className="muted-s">Enter the balance yourself</div>
+                    <div className="muted-s">This account's balance is whatever you last typed in here — it does not move on its own between updates.</div>
                     <div className="recon-row">
                       <input type="date" value={(snap[acc.id] || {}).date || todayISO()} onChange={(e) => setSnap({ ...snap, [acc.id]: { ...(snap[acc.id] || {}), date: e.target.value } })} />
                       <input placeholder="Balance" value={(snap[acc.id] || {}).balance || ""} onChange={(e) => setSnap({ ...snap, [acc.id]: { ...(snap[acc.id] || {}), balance: e.target.value } })} />
@@ -973,13 +1012,16 @@ function Recurring({ state, update, cur, ym, cats }) {
   return (
     <div className="grid">
       <div className="stat-row">
-        <Stat label="Monthly income (model)" value={C0(totIn, cur)} tone="pos" />
-        <Stat label="Monthly expenses (model)" value={C0(totOut, cur)} tone="neg" />
-        <Stat label="Planned monthly net" value={C0(totIn + totOut, cur)} tone={totIn + totOut >= 0 ? "pos" : "neg"} sub="excl. annual items & transfers" />
+        <Stat label="Planned monthly income" value={C0(totIn, cur)} tone="pos"
+          help="The money-in rows of the table below, added up. This is what you expect in a normal month, not what has actually arrived." />
+        <Stat label="Planned monthly expenses" value={C0(totOut, cur)} tone="neg"
+          help="The money-out rows of the table below, added up, leaving out anything that only moves money between your own accounts. This is what you expect to spend in a normal month, not what you have actually spent." />
+        <Stat label="Planned monthly net" value={C0(totIn + totOut, cur)} tone={totIn + totOut >= 0 ? "pos" : "neg"} sub="a normal month only"
+          help="Planned income less planned expenses. Annual and irregular bills are not in here — they sit on the Annual Expenses page and only land in the months they fall due. Money moved between your own accounts is not counted either." />
       </div>
       <Card className="span3" title="Regular monthly income & expenses" right={<span className="muted-s">edits feed the forecast and long-term plan immediately</span>}>
         <table className="tbl">
-          <thead><tr><th>Item</th><th>Category</th><th>Expected day</th><th className="r">Amount / month</th><th>This month ({ymShort(ym)})</th><th className="r">Variance</th><th></th></tr></thead>
+          <thead><tr><th>Item</th><th>Category</th><th>Expected day</th><th className="r">Amount / month</th><th>This month ({ymShort(ym)})</th><th className="r">Variance<Help text={recurringVarianceHelp(cur)} /></th><th></th></tr></thead>
           <tbody>
             {state.recurring.map((r) => {
               const m = matchRecurring(r, state.txns, ym, cats);
@@ -994,8 +1036,8 @@ function Recurring({ state, update, cur, ym, cats }) {
                   </td>
                   <td><input className="cell-in day" type="number" min="1" max="31" value={r.day} onChange={(e) => update((s) => ({ ...s, recurring: s.recurring.map((x) => x.id === r.id ? { ...x, day: +e.target.value } : x) }))} /></td>
                   <td className="r"><NumInput valueC={r.amountC} onCommit={(c) => update((s) => ({ ...s, recurring: s.recurring.map((x) => x.id === r.id ? { ...x, amountC: c } : x) }), "edit", `Recurring "${r.name}" amount → ${C(c, cur)}`)} /></td>
-                  <td>{isTransfer ? <span className="chip transfer">transfer</span> : m.paid ? <span className="chip ok">actualised {C(m.actualC, cur)}</span> : <span className="chip pending">pending</span>}</td>
-                  <td className="r">{m.paid && !isTransfer ? <span className={`amt ${m.material ? "warn" : "muted-s"}`}>{m.varianceC === 0 ? "on plan" : C(m.varianceC, cur)}{m.material ? " ⚠" : ""}</span> : "—"}</td>
+                  <td>{isTransfer ? <span className="chip transfer">transfer</span> : m.paid ? <span className="chip ok" title="Matched to real transactions in this month — this is what actually went through, not the planned amount.">actual {C(m.actualC, cur)}</span> : <span className="chip pending">pending</span>}</td>
+                  <td className="r">{m.paid && !isTransfer ? <span className={`amt ${m.material ? "warn" : "muted-s"}`} title={recurringVarianceHelp(cur)}>{m.varianceC === 0 ? "on plan" : C(m.varianceC, cur)}{m.material ? " ⚠" : ""}</span> : "—"}</td>
                   <td className="r"><DeleteCell what={r.name} onDelete={() => update((s) => ({ ...s, recurring: s.recurring.filter((x) => x.id !== r.id) }), "edit", `Removed recurring item "${r.name}"`)} /></td>
                 </tr>
               );
@@ -1015,7 +1057,8 @@ function Annual({ state, update, cur, ym, cats, goTxns }) {
     <div className="grid">
       <div className="stat-row">
         <Stat label={`Annual outgoings · ${year}`} value={C0(tot, cur)} tone="neg" />
-        <Stat label="Monthly equivalent" value={C0(Math.round(tot / 12), cur)} sub="worth provisioning in cash buffer" />
+        <Stat label="Monthly equivalent" value={C0(Math.round(tot / 12), cur)} sub="worth setting aside each month"
+          help="The year's total spread evenly over 12 months. These bills do not actually arrive evenly, so putting this much aside each month is what stops the big ones landing on an empty account." />
         <Stat label="Paid so far this year" value={`${state.annual.filter((a) => matchAnnual(a, state.txns, year).paid).length} / ${state.annual.length}`} />
       </div>
       <Card className="span3" title={`Payment timeline · ${year}`}>
@@ -1035,9 +1078,9 @@ function Annual({ state, update, cur, ym, cats, goTxns }) {
           })}
         </div>
       </Card>
-      <Card className="span3" title="Annual & irregular expenses" right={<span className="muted-s">escalation applies each year in forecasts</span>}>
+      <Card className="span3" title="Annual & irregular expenses" right={<span className="muted-s">each amount grows by its annual increase, every year of the forecast</span>}>
         <table className="tbl">
-          <thead><tr><th>Item</th><th>Category</th><th>Month</th><th className="r">Amount</th><th>Escalation %/yr</th><th>Status · {year}</th><th className="r">Variance</th><th></th></tr></thead>
+          <thead><tr><th>Item</th><th>Category</th><th>Month</th><th className="r">Amount</th><th>Annual increase %<Help text="How much this bill goes up each year. Applied on top of the amount for every year the forecast and the long-term plan run — 0 keeps it flat." /></th><th>Status · {year}</th><th className="r">Variance<Help text="The gap between the amount you planned for and what actually went through." /></th><th></th></tr></thead>
           <tbody>
             {state.annual.map((a) => {
               const m = matchAnnual(a, state.txns, year);
@@ -1086,7 +1129,7 @@ function Compensation({ state, update, cur, palette }) {
           <label>Interest rate %<PctInput value={mortgage.ratePct} onCommit={(v) => setMort({ ratePct: v }, `Mortgage rate → ${v}%`)} step={0.05} /></label>
           <label>Remaining term (months)<PctInput value={mortgage.termMonths} onCommit={(v) => setMort({ termMonths: Math.round(v) }, `Mortgage term → ${v} months`)} step={1} min={1} max={TERM_MONTHS_MAX} validate={termMonthsError} /></label>
           <label>Fixed rate expires<input type="month" className="cell-in" value={mortgage.fixedExpiry} onChange={(e) => setMort({ fixedExpiry: e.target.value }, "Fixed-rate expiry changed")} /></label>
-          <label>Actual monthly payment (override, 0 = computed)<NumInput valueC={mortgage.paymentOverrideC || 0} onCommit={(c) => setMort({ paymentOverrideC: c || null }, `Mortgage payment override → ${C(c, cur)}`)} /></label>
+          <label title="If your lender's payment differs from the textbook figure — because you overpay, or the term was reset — type what you actually pay and the app will use it everywhere. Leave it at 0 and the app works the payment out from the balance, rate and term above.">Monthly payment you actually make (leave 0 to work it out)<NumInput valueC={mortgage.paymentOverrideC || 0} onCommit={(c) => setMort({ paymentOverrideC: c || null }, `Mortgage payment override → ${C(c, cur)}`)} /></label>
           <label>Property value (estimate)<NumInput valueC={mortgage.propertyValueC || 0} onCommit={(c) => setMort({ propertyValueC: c }, `Property value → ${C(c, cur)}`)} /></label>
         </div>
         <div className="callout">Payment used: <b>{C(am.paymentC, cur)}/mo</b> · projected payoff <b>{payoffYm === "—" ? "—" : ymLabel(payoffYm)}</b> · fixed rate ends <b>{ymLabel(mortgage.fixedExpiry)}</b> — after which the forecast scenario rate change applies.</div>
@@ -1110,6 +1153,7 @@ function Compensation({ state, update, cur, palette }) {
 
 function ScenarioPanel({ state, update }) {
   const sc = state.scenario;
+  const st = state.settings;
   const set = (patch) => update((s) => ({ ...s, scenario: { ...s.scenario, ...patch } }));
   return (
     <Card title="Scenario overlay" className="span3 scen" right={
@@ -1118,9 +1162,14 @@ function ScenarioPanel({ state, update }) {
       <div className="scen-grid" data-off={!sc.enabled}>
         <label>Salary / bonus change %<PctInput value={sc.salaryPct} onCommit={(v) => set({ salaryPct: v })} step={0.5} /></label>
         <label>Spending adjustment %<PctInput value={sc.spendPct} onCommit={(v) => set({ spendPct: v })} step={0.5} /></label>
-        <label>Inflation delta %<PctInput value={sc.inflationDelta} onCommit={(v) => set({ inflationDelta: v })} step={0.25} /></label>
-        <label>Mortgage rate delta %<PctInput value={sc.rateDelta} onCommit={(v) => set({ rateDelta: v })} step={0.25} /></label>
-        <label>Investment return delta %<PctInput value={sc.returnDelta} onCommit={(v) => set({ returnDelta: v })} step={0.25} /></label>
+        {/* These three are added to the rates already in the model, not used in
+            place of them — which "delta" never said out loud. */}
+        <label>Inflation change %/yr<PctInput value={sc.inflationDelta} onCommit={(v) => set({ inflationDelta: v })} step={0.25} />
+          <span className="scen-hint">added to the {st.inflationPct}% in Settings, not instead of it</span></label>
+        <label>Mortgage rate change %<PctInput value={sc.rateDelta} onCommit={(v) => set({ rateDelta: v })} step={0.25} />
+          <span className="scen-hint">added to the {state.mortgage.ratePct}% on your mortgage</span></label>
+        <label>Investment return change %/yr<PctInput value={sc.returnDelta} onCommit={(v) => set({ returnDelta: v })} step={0.25} />
+          <span className="scen-hint">added to both the {st.investReturnPct}% investment and {st.cryptoReturnPct}% crypto returns in Settings</span></label>
       </div>
       <div className="muted-s">The overlay is drawn alongside the base case; it never overwrites your model.</div>
     </Card>
@@ -1145,18 +1194,19 @@ function Forecast({ state, update, cur, fc, fcScen, palette }) {
           </LineChart>
         </ResponsiveContainer>
       </Card>
-      <Card className="span3" title="Monthly detail" right={<span className="muted-s">actual / blend months replace plan once transactions are matched</span>}>
+      <Card className="span3" title="Monthly detail" right={<span className="muted-s">a month stops being pure plan as soon as its transactions are matched</span>}>
+        {basisLegend}
         <table className="tbl">
-          <thead><tr><th>Month</th><th>Basis</th><th className="r">Income</th><th className="r">Outgoings</th><th className="r">Net</th><th className="r">vs plan</th><th className="r">Cumulative</th>{fcScen && <th className="r">Scenario net</th>}</tr></thead>
+          <thead><tr><th>Month</th><th>Figures are</th><th className="r">Income</th><th className="r">Outgoings</th><th className="r">Net</th><th className="r">vs plan<Help text={forecastVarianceHelp} /></th><th className="r">Cumulative</th>{fcScen && <th className="r">Scenario net</th>}</tr></thead>
           <tbody>
             {fc.rows.map((r, i) => (
               <tr key={r.ym} className={r.mode !== "plan" ? "hl" : ""}>
                 <td>{ymLabel(r.ym)}</td>
-                <td><span className={`chip ${r.mode === "plan" ? "ghost" : r.mode === "blend" ? "pending" : "ok"}`}>{r.mode}</span></td>
+                <td><span className={`chip ${r.mode === "plan" ? "ghost" : r.mode === "blend" ? "pending" : "ok"}`} title={BASIS_HELP[r.mode]}>{BASIS_WORD[r.mode] || r.mode}</span></td>
                 <td className="r"><Amt c={r.usedIn} cur={cur} /></td>
                 <td className="r"><Amt c={r.usedOut} cur={cur} /></td>
                 <td className="r"><Amt c={r.net} cur={cur} /></td>
-                <td className="r">{r.mode !== "plan" ? <span className={`amt ${Math.abs(r.varianceC) > Math.abs(r.planNet) * 0.1 ? "warn" : "muted-s"}`}>{C(r.varianceC, cur)}</span> : "—"}</td>
+                <td className="r">{r.mode !== "plan" ? <span className={`amt ${Math.abs(r.varianceC) > Math.abs(r.planNet) * 0.1 ? "warn" : "muted-s"}`} title={forecastVarianceHelp}>{C(r.varianceC, cur)}</span> : "—"}</td>
                 <td className="r"><Amt c={r.cum} cur={cur} /></td>
                 {fcScen && <td className="r"><span className="amt scen-amt">{C(fcScen.rows[i].net, cur)}</span></td>}
               </tr>
@@ -1198,7 +1248,7 @@ function LongTerm({ state, update, cur, lt, ltScen, palette }) {
       </div>
       {lt.depletionAge && <div className="banner warn span3">⚠ Retirement depletion warning: on current assumptions your liquid assets are exhausted at age {lt.depletionAge}, before your planning age of {st.planningAge}. Consider higher contributions, later retirement, or lower spend — test it with the scenario overlay.</div>}
       <ScenarioPanel state={state} update={update} />
-      <Card className="span3" title="Assets vs liabilities to planning age" right={<span className="muted-s">history = actual balances today · forecast beyond</span>}>
+      <Card className="span3" title="Assets vs liabilities to planning age" right={<span className="muted-s">starts from your balances today · everything after is projected</span>}>
         <ResponsiveContainer width="100%" height={260}>
           <ComposedChart data={chart}>
             <CartesianGrid stroke={palette.grid} vertical={false} />
@@ -1250,6 +1300,14 @@ function LongTerm({ state, update, cur, lt, ltScen, palette }) {
 /* ============================================================
    IMPORTS — upload → map columns → stage → review → commit
    ============================================================ */
+/* applyRules writes a raw token; these are the words shown for it. */
+const CONFIDENCE = {
+  high:   { word: "rule matched",   help: "One of your merchant rules matched this description, so the category is near enough certain." },
+  medium: { word: "guessed",        help: "No rule matched, but a category name appears in the description, so it was guessed. Worth a glance." },
+  low:    { word: "not recognised", help: "Nothing matched, so it was left uncategorised. Pick a category here, or add a rule so next month's import lands clean." },
+  manual: { word: "you chose it",   help: "You picked this category by hand on this screen." },
+};
+
 function Imports({ state, update, cur, cats, catName, accName }) {
   const [step, setStep] = useState("upload"); // upload | map | review
   const [file, setFile] = useState(null);
@@ -1444,9 +1502,11 @@ function Imports({ state, update, cur, cats, catName, accName }) {
           <div className="form form-row">
             <label>Date column<select className="cat-sel" value={map.date} onChange={(e) => setMap({ ...map, date: e.target.value })}><option value="">—</option>{raw.headers.map((h) => <option key={h}>{h}</option>)}</select></label>
             <label>Description column<select className="cat-sel" value={map.desc} onChange={(e) => setMap({ ...map, desc: e.target.value })}><option value="">—</option>{raw.headers.map((h) => <option key={h}>{h}</option>)}</select></label>
-            <label>Amount layout
+            {/* Option text has to stay inside .cat-sel's 175px, so the fuller
+                wording lives on the label rather than clipping in the box. */}
+            <label title="How your export writes amounts: one column where money out is a minus, or two columns — one for money out, one for money in.">Amount layout
               <select className="cat-sel" value={map.mode} onChange={(e) => setMap({ ...map, mode: e.target.value })}>
-                <option value="single">Single signed amount column</option>
+                <option value="single">One amount column</option>
                 <option value="split">Separate debit / credit columns</option>
               </select>
             </label>
@@ -1483,15 +1543,15 @@ function Imports({ state, update, cur, cats, catName, accName }) {
 
       {step === "review" && (
         <Card className="span3" title="Review staged transactions" right={
-          <span className="muted-s">{stats.inc} to commit · <span className="warn-t">{stats.dup} likely duplicates</span> · <span className="warn-t">{stats.low} low-confidence</span></span>
+          <span className="muted-s">{stats.inc} to commit · <span className="warn-t">{stats.dup} likely duplicates</span> · <span className="warn-t">{stats.low} not recognised</span></span>
         }>
           {/* set by runMapping when rows failed to map — it used to be written
               and then immediately stepped past, so nobody ever saw it */}
           {err && <div className="banner warn">{err}</div>}
-          <div className="banner">Nothing has been saved yet. Duplicates were auto-deselected; low-confidence categorisations are flagged <span className="chip warn">low</span> — fix them here or add a merchant rule so next month's import lands clean.</div>
+          <div className="banner">Nothing has been saved yet. Duplicates were auto-deselected; anything the app could not categorise is flagged <span className="chip warn">{CONFIDENCE.low.word}</span> — fix them here or add a merchant rule so next month's import lands clean.</div>
           <div className="scroll-y" style={{ maxHeight: 420 }}>
             <table className="tbl">
-              <thead><tr><th></th><th>Date</th><th>Description</th><th className="r">Amount</th><th>Category</th><th>Confidence</th><th>Flags</th><th>Rule</th></tr></thead>
+              <thead><tr><th></th><th>Date</th><th>Description</th><th className="r">Amount</th><th>Category</th><th>Where the category came from<Help text="How the app arrived at the category on the left, and therefore how much it is worth checking." /></th><th>Flags</th><th>Rule</th></tr></thead>
               <tbody>
                 {staged.map((t) => (
                   <tr key={t.id} className={!t.include ? "dim" : ""}>
@@ -1500,7 +1560,8 @@ function Imports({ state, update, cur, cats, catName, accName }) {
                     <td>{t.desc}</td>
                     <td className="r"><Amt c={t.amountC} cur={cur} /></td>
                     <td><select className="cat-sel" value={t.categoryId} onChange={(e) => setStg(t.id, { categoryId: e.target.value, confidence: "manual" })}>{cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></td>
-                    <td><span className={`chip ${t.confidence === "high" ? "ok" : t.confidence === "medium" ? "pending" : t.confidence === "manual" ? "ghost" : "warn"}`}>{t.confidence}</span></td>
+                    <td><span className={`chip ${t.confidence === "high" ? "ok" : t.confidence === "medium" ? "pending" : t.confidence === "manual" ? "ghost" : "warn"}`}
+                      title={(CONFIDENCE[t.confidence] || {}).help}>{(CONFIDENCE[t.confidence] || {}).word || t.confidence}</span></td>
                     <td>{t.dup && <span className="chip warn">duplicate?</span>}</td>
                     <td>{t.confidence !== "high" && (
                       <button className="mini" title="Create a merchant rule from this description" onClick={() => {
@@ -1541,7 +1602,7 @@ function Settings({ state, update, cur, fc, lt, catName, accName, theme, setThem
               already retired — so it is bounded only by the absolute age range. */}
           <label>Retirement age<PctInput value={st.retirementAge} step={1} min={AGE_MIN} max={AGE_MAX}
             validate={(v) => ageError("retirementAge", v, st)} onCommit={(v) => set({ retirementAge: Math.round(v) }, `Retirement age → ${v}`)} /></label>
-          <label>Planning age (horizon)<PctInput value={st.planningAge} step={1} min={AGE_MIN} max={AGE_MAX}
+          <label title="How far ahead the Long-Term Plan runs — the last age it draws. It is a planning horizon, not a guess at how long you will live.">Plan runs to age<PctInput value={st.planningAge} step={1} min={AGE_MIN} max={AGE_MAX}
             validate={(v) => ageError("planningAge", v, st)} onCommit={(v) => set({ planningAge: Math.round(v) }, `Planning age → ${v}`)} /></label>
           <label>Inflation %/yr<PctInput value={st.inflationPct} onCommit={(v) => set({ inflationPct: v }, `Inflation → ${v}%`)} /></label>
           <label>Investment return %/yr<PctInput value={st.investReturnPct} onCommit={(v) => set({ investReturnPct: v }, `Investment return → ${v}%`)} /></label>
@@ -1567,7 +1628,7 @@ function Settings({ state, update, cur, fc, lt, catName, accName, theme, setThem
             lt.rows.map((r) => [r.year, r.age, r.retired ? "yes" : "", (r.incomeC / 100).toFixed(2), (r.spendC / 100).toFixed(2), (r.netC / 100).toFixed(2), (r.cashC / 100).toFixed(2), (r.investC / 100).toFixed(2), (r.cryptoC / 100).toFixed(2), ((r.propertyC || 0) / 100).toFixed(2), (r.mortC / 100).toFixed(2), (r.netWorthC / 100).toFixed(2)]))}>
             ⇩ Long-term plan</button>
         </div>
-        <p className="muted-s" style={{ marginTop: 10 }}>When signed in, every change autosaves to your account (per-user, row-level security). In demo mode, data lives in memory for this session only. The data layer is structured as relational tables (accounts, transactions, categories, rules, annual rules, compensation, mortgage, batches, assumptions, audit).</p>
+        <p className="muted-s" style={{ marginTop: 10 }}>When you are signed in, every change is saved to your account on its own, and nobody else can read it. In demo mode nothing is saved — close the tab and the figures are gone, so export anything you want to keep.</p>
       </Card>
       <Card className="span3" title="Audit trail" right={<span className="muted-s">{state.audit.length} events — every import, edit, exclusion and rule change</span>}>
         <div className="scroll-y" style={{ maxHeight: 340 }}>
@@ -1740,6 +1801,16 @@ const CSS = `
 
   .tip { background: var(--accent-bg-soft); border: 1px solid var(--accent-border); border-radius: 8px; padding: 8px 11px; font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
   .tip-t { color: var(--text-muted-2); margin-bottom: 4px; }
+
+  /* explanations: a hover affordance for figures whose derivation is invisible,
+     and a legend for the words used in the forecast's basis column */
+  .help { display: inline-grid; place-items: center; width: 13px; height: 13px; margin-left: 5px; border-radius: 50%;
+    border: 1px solid var(--border-strong); color: var(--text-muted); font-size: 9px; line-height: 1; letter-spacing: 0;
+    cursor: help; vertical-align: 1px; }
+  .help:hover { color: var(--accent); border-color: var(--accent-deep); }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 22px; margin-bottom: 12px; font-size: 11.5px; color: var(--text-muted); }
+  .legend > span { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .scen-hint { font-size: 10.5px; line-height: 1.35; color: var(--text-faint); }
 
   @media (max-width: 1100px) {
     .grid { grid-template-columns: 1fr; }
