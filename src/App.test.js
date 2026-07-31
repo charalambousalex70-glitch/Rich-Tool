@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
-  toC, C, C0, parseDateAny,
+  toC, C, C0, C0Short, parseDateAny,
   isFlow, accountBalance,
   monthlyPayment, amortise,
   matchRecurring, matchAnnual,
@@ -308,6 +308,38 @@ describe("C0", () => {
 
   it("honours a currency override", () => {
     expect(C0(123456, "$")).toBe("$1,235");
+  });
+});
+
+/* ============================================================
+   C0Short — chart axis labels on a phone-width card, nowhere else
+   ============================================================ */
+describe("C0Short", () => {
+  it("leaves anything under a thousand units alone", () => {
+    expect(C0Short(0)).toBe("R0");
+    expect(C0Short(99900)).toBe("R999");
+  });
+
+  it("abbreviates thousands, millions and billions", () => {
+    expect(C0Short(120000)).toBe("R1.2k");
+    expect(C0Short(1250000)).toBe("R13k");
+    expect(C0Short(123456789)).toBe("R1.2m");
+    expect(C0Short(250000000000)).toBe("R2.5b");
+  });
+
+  it("keeps one decimal below ten, so 1.4m does not read as 1m", () => {
+    expect(C0Short(140000000)).toBe("R1.4m");
+    expect(C0Short(1400000000)).toBe("R14m");
+  });
+
+  it("uses a U+2212 MINUS SIGN, like every other money formatter here", () => {
+    const s = C0Short(-123456789);
+    expect(s).toBe(`${MINUS}R1.2m`);
+    expect(s.startsWith("-")).toBe(false);
+  });
+
+  it("honours a currency override", () => {
+    expect(C0Short(123456789, "$")).toBe("$1.2m");
   });
 });
 

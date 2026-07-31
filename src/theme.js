@@ -93,6 +93,9 @@ export const THEME_CSS = `
     --btn-text: #baf3d6;
     --step-on-text: #baf3d6;
     --drop-border: #2b4033;
+    /* Behind the sections drawer, where the sidebar becomes one. Dark in both
+       themes: it is the page being put in shadow, not a surface of its own. */
+    --scrim: #04080699;
 
     --pos: #7ee2ae;
     --neg: #e0a24a;
@@ -166,6 +169,7 @@ export const THEME_CSS = `
     --btn-text: #ffffff;
     --step-on-text: #0f6b45;
     --drop-border: #a8c4b5;
+    --scrim: #1c2b2499;
 
     --pos: #16794f;
     --neg: #a8442a;

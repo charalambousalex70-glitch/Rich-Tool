@@ -40,6 +40,18 @@ export const C0 = (cents, cur = "R") => {
   const neg = cents < 0;
   return `${neg ? "\u2212" : ""}${cur}${Math.round(Math.abs(cents) / 100).toLocaleString("en-US")}`;
 };
+/* Chart axis labels on a phone-width card, and nowhere else. A card is about
+   260px wide there, and a grouped figure like R1,234,567 needs an 86px gutter
+   to sit in \u2014 a third of the chart spent on the scale. This is display-only:
+   no stored figure, no table and no export is ever rounded like this. */
+export const C0Short = (cents, cur = "R") => {
+  const neg = cents < 0;
+  const units = Math.round(Math.abs(cents) / 100);
+  const [n, suffix] = units >= 1e9 ? [units / 1e9, "b"] : units >= 1e6 ? [units / 1e6, "m"] : units >= 1e3 ? [units / 1e3, "k"] : [units, ""];
+  // one decimal below ten, so 1.4m does not read as 1m
+  const txt = !suffix ? String(units) : n < 10 ? String(Math.round(n * 10) / 10) : String(Math.round(n));
+  return `${neg ? "\u2212" : ""}${cur}${txt}${suffix}`;
+};
 
 /* ============================================================
    INPUT VALIDATION \u2014 toC and parseFloat both fall back to 0, so
@@ -529,6 +541,35 @@ export default function App({ boot = null, onPersist = null }) {
     if (onPersist) onPersist(state);
   }, [state, onPersist]);
   const [page, setPage] = useState("overview");
+  /* Below the drawer breakpoint the sidebar is off-canvas and this opens it.
+     It stays false on a wide screen because the only control that sets it —
+     the toggle in the topbar — is display:none there, and the drawer rules
+     live inside the same media query, so a drawer left open on a phone and
+     carried into a desktop width simply draws as the sidebar again. */
+  const [navOpen, setNavOpen] = useState(false);
+  const navBtnRef = useRef(null);
+  const navCloseRef = useRef(null);
+  const navWasOpen = useRef(false);
+  const closeNav = () => setNavOpen(false);
+  /* Where focus goes matters twice: into the drawer when it opens, because a
+     keyboard user is otherwise left standing in the topbar in front of a panel
+     they have not been taken to, and back onto the toggle when it closes,
+     because that is where they were.
+
+     Both moves wait a frame. The page behind the drawer is marked inert in the
+     same commit, and the browser blurs whatever was focused inside it once
+     that lands — focus set before then is simply dropped, and focus set on the
+     toggle while the page around it is still inert never takes at all. Both
+     were observed: Escape left focus on <body>. */
+  useEffect(() => {
+    const target = navOpen ? navCloseRef : navWasOpen.current ? navBtnRef : null;
+    navWasOpen.current = navOpen;
+    const frame = requestAnimationFrame(() => { if (target && target.current) target.current.focus(); });
+    if (!navOpen) return () => cancelAnimationFrame(frame);
+    const onKey = (e) => { if (e.key === "Escape") setNavOpen(false); };
+    document.addEventListener("keydown", onKey);
+    return () => { cancelAnimationFrame(frame); document.removeEventListener("keydown", onKey); };
+  }, [navOpen]);
   const [ym, setYm] = useState(nowYm());
   const [txnFilter, setTxnFilter] = useState({ account: "all", category: "all", search: "" });
   const cur = state.settings.currency;
@@ -583,14 +624,22 @@ export default function App({ boot = null, onPersist = null }) {
   return (
     <div className="app">
       <style>{THEME_CSS + CSS}</style>
-      <nav className="nav" aria-label="Sections">
+      {/* The scrim is a mouse and touch convenience only — a keyboard has
+          Escape, and a screen reader has the drawer's own Close. */}
+      {navOpen && <div className="nav-scrim" aria-hidden="true" onClick={closeNav} />}
+      <nav id="app-nav" className="nav" data-open={navOpen} aria-label="Sections">
         <div className="brand">
           <div className="brand-mark" aria-hidden="true">▚</div>
           <div><div className="brand-name">LEDGERLINE</div><div className="brand-sub">personal finance model</div></div>
+          {/* Only drawn while the sidebar is a drawer: a touch user has no
+              Escape key, so the drawer needs a way out that is not the scrim. */}
+          <button type="button" className="nav-close" ref={navCloseRef} onClick={closeNav}>
+            <span aria-hidden="true">✕</span><span className="sr-only">Close the sections menu</span>
+          </button>
         </div>
         {NAV.map(([k, label, ic]) => (
           <button key={k} className={`nav-item ${page === k ? "on" : ""}`} aria-current={page === k ? "page" : undefined}
-            onClick={() => setPage(k)}>
+            onClick={() => { setPage(k); closeNav(); }}>
             <span className="nav-ic" aria-hidden="true">{ic}</span>{label}
             {k === "imports" && <span className="nav-badge">{state.batches.length}<span className="sr-only"> statement imports so far</span></span>}
           </button>
@@ -600,8 +649,16 @@ export default function App({ boot = null, onPersist = null }) {
         <div className="nav-foot">Signed in, every change is saved to your account.<br />In demo mode nothing is saved.</div>
       </nav>
 
-      <main className="main">
+      {/* inert while the drawer is open, so Tab cannot walk off into the page
+          lying behind the scrim. Nothing else about the page changes. */}
+      <main className="main" {...(navOpen ? { inert: "" } : {})}>
         <header className="topbar">
+          {/* Hidden outright above the drawer breakpoint, so it is not a tab
+              stop on a desktop where the sidebar is always on screen. */}
+          <button type="button" className="nav-toggle" ref={navBtnRef} aria-expanded={navOpen} aria-controls="app-nav"
+            onClick={() => (navOpen ? closeNav() : setNavOpen(true))}>
+            <span className="nav-toggle-ic" aria-hidden="true">☰</span>Sections
+          </button>
           <h1 className="crumb">{NAV.find((n) => n[0] === page)?.[1]}</h1>
           {showMonthSel && (
             <div className="month-sel">
@@ -756,6 +813,28 @@ const useReducedMotion = () => {
   return reduced;
 };
 
+/* ResponsiveContainer only makes a chart's width elastic; the axis gutter is a
+   fixed pixel prop, and 70-86px of it out of a 260px card is a quarter of the
+   picture given over to the scale. Recharts takes it as a number, not CSS, so
+   the breakpoint has to be legible to JavaScript too. Same shape as
+   useReducedMotion above, and the same reason: matchMedia is the only way to
+   ask. */
+const useNarrowCharts = () => {
+  const query = "(max-width: 720px)";
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== "undefined" && !!window.matchMedia && window.matchMedia(query).matches
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia(query);
+    const onChange = () => setNarrow(mq.matches);
+    onChange();
+    if (mq.addEventListener) { mq.addEventListener("change", onChange); return () => mq.removeEventListener("change", onChange); }
+    mq.addListener(onChange); return () => mq.removeListener(onChange);
+  }, []);
+  return narrow;
+};
+
 /* Money in and money out were told apart by hue alone. In the light palette the
    two measure 1.10:1 against each other, so to a deuteranope — or a greyscale
    printer — the bars are one colour. Money out is hatched now; the hue is the
@@ -893,6 +972,7 @@ const forecastVarianceHelp = "How far this month has landed from the plan. Shown
    ============================================================ */
 function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut, fc, lt, goTxns, cats, catName, palette }) {
   const still = useReducedMotion();
+  const narrow = useNarrowCharts();
   const spendPct = budgetOut !== 0 ? Math.round((monthSpend / budgetOut) * 100) : 0;
   const byCat = {};
   state.txns.filter((t) => t.date.slice(0, 7) === ym && isFlow(t, cats) && t.amountC < 0)
@@ -930,7 +1010,7 @@ function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut
             {chartHatch("ribbon", palette)}
             <CartesianGrid stroke={palette.grid} vertical={false} />
             <XAxis dataKey="name" tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} />
-            <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} width={70} />
+            <YAxis tickFormatter={(v) => (narrow ? C0Short(v, cur) : C0(v, cur))} tick={{ fill: palette.axis, fontSize: narrow ? 10 : 11 }} axisLine={false} tickLine={false} width={narrow ? 44 : 70} />
             <Tooltip content={chartTip(cur)} />
             <ReferenceLine y={0} stroke={palette.zero} />
             <Bar dataKey="net" name="Net flow" radius={[3, 3, 0, 0]} isAnimationActive={!still}>
@@ -985,7 +1065,7 @@ function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut
           <AreaChart data={lt.rows.map((r) => ({ name: r.age, nw: r.netWorthC }))}>
             <CartesianGrid stroke={palette.grid} vertical={false} />
             <XAxis dataKey="name" tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} />
-            <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} width={80} />
+            <YAxis tickFormatter={(v) => (narrow ? C0Short(v, cur) : C0(v, cur))} tick={{ fill: palette.axis, fontSize: narrow ? 10 : 11 }} axisLine={false} tickLine={false} width={narrow ? 44 : 80} />
             <Tooltip content={chartTip(cur)} />
             <ReferenceLine x={state.settings.retirementAge} stroke={palette.marker} strokeDasharray="4 3" label={{ value: "retire", fill: palette.marker, fontSize: 11 }} />
             <Area dataKey="nw" name="Net worth" stroke={palette.pos} fill="url(#nwg)" strokeWidth={2} isAnimationActive={!still} />
@@ -1293,6 +1373,7 @@ function Annual({ state, update, cur, ym, cats, goTxns }) {
 
 function Compensation({ state, update, cur, palette }) {
   const still = useReducedMotion();
+  const narrow = useNarrowCharts();
   const { comp, mortgage } = state;
   const setComp = (patch, msg) => update((s) => ({ ...s, comp: { ...s.comp, ...patch } }), "edit", msg);
   const setMort = (patch, msg) => update((s) => ({ ...s, mortgage: { ...s.mortgage, ...patch } }), "edit", msg);
@@ -1330,7 +1411,7 @@ function Compensation({ state, update, cur, palette }) {
           <ComposedChart data={yearMarks.map((r, i) => ({ name: r.ym.slice(0, 4), bal: r.balanceC, int: am.rows.slice(i * 12, i * 12 + 12).reduce((s, x) => s + x.interestC, 0), prin: am.rows.slice(i * 12, i * 12 + 12).reduce((s, x) => s + x.principalC, 0) }))}>
             <CartesianGrid stroke={palette.grid} vertical={false} />
             <XAxis dataKey="name" tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} />
-            <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} width={80} />
+            <YAxis tickFormatter={(v) => (narrow ? C0Short(v, cur) : C0(v, cur))} tick={{ fill: palette.axis, fontSize: narrow ? 10 : 11 }} axisLine={false} tickLine={false} width={narrow ? 44 : 80} />
             <Tooltip content={chartTip(cur)} /><Legend wrapperStyle={{ fontSize: 12 }} />
             <Bar dataKey="int" name="Interest / yr" stackId="a" fill={palette.neg} radius={[0, 0, 0, 0]} isAnimationActive={!still} />
             <Bar dataKey="prin" name="Principal / yr" stackId="a" fill={palette.invest} radius={[3, 3, 0, 0]} isAnimationActive={!still} />
@@ -1374,6 +1455,7 @@ function ScenarioPanel({ state, update }) {
 
 function Forecast({ state, update, cur, fc, fcScen, palette }) {
   const still = useReducedMotion();
+  const narrow = useNarrowCharts();
   const chart = fc.rows.map((r, i) => ({ name: ymShort(r.ym), base: r.cum, scen: fcScen ? fcScen.rows[i].cum : undefined }));
   return (
     <div className="grid">
@@ -1385,7 +1467,7 @@ function Forecast({ state, update, cur, fc, fcScen, palette }) {
           <LineChart data={chart}>
             <CartesianGrid stroke={palette.grid} vertical={false} />
             <XAxis dataKey="name" tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} />
-            <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} width={80} />
+            <YAxis tickFormatter={(v) => (narrow ? C0Short(v, cur) : C0(v, cur))} tick={{ fill: palette.axis, fontSize: narrow ? 10 : 11 }} axisLine={false} tickLine={false} width={narrow ? 44 : 80} />
             <Tooltip content={chartTip(cur)} /><Legend wrapperStyle={{ fontSize: 12 }} />
             <ReferenceLine y={0} stroke={palette.zero} />
             <Line dataKey="base" name="Base case" stroke={palette.pos} strokeWidth={2} dot={false} isAnimationActive={!still} />
@@ -1426,6 +1508,7 @@ function Forecast({ state, update, cur, fc, fcScen, palette }) {
 
 function LongTerm({ state, update, cur, lt, ltScen, palette }) {
   const still = useReducedMotion();
+  const narrow = useNarrowCharts();
   const st = state.settings;
   /* The projection runs from the current age to the planning age, so if the
      planning age is not above the current age there are no years to draw.
@@ -1462,7 +1545,7 @@ function LongTerm({ state, update, cur, lt, ltScen, palette }) {
           <ComposedChart data={chart}>
             <CartesianGrid stroke={palette.grid} vertical={false} />
             <XAxis dataKey="name" tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} />
-            <YAxis tickFormatter={(v) => C0(v, cur)} tick={{ fill: palette.axis, fontSize: 11 }} axisLine={false} tickLine={false} width={86} />
+            <YAxis tickFormatter={(v) => (narrow ? C0Short(v, cur) : C0(v, cur))} tick={{ fill: palette.axis, fontSize: narrow ? 10 : 11 }} axisLine={false} tickLine={false} width={narrow ? 44 : 86} />
             <Tooltip content={chartTip(cur)} /><Legend wrapperStyle={{ fontSize: 12 }} />
             <ReferenceLine x={st.retirementAge} stroke={palette.marker} strokeDasharray="4 3" />
             <Area dataKey="cash" name="Cash" stackId="a" fill={palette.cash} stroke="none" isAnimationActive={!still} />
@@ -1900,9 +1983,14 @@ const CSS = `
      default text size got nothing at all — the app ignored the setting
      outright. The type scale is in rem now and follows that default. The scale
      itself is not redrawn: 0.875rem is the 14px this has always been at a 16px
-     default, and so on down. Widths, padding and the sidebar stay in px on
-     purpose; making the layout itself elastic is a separate job. */
-  .app { display: flex; min-height: 100vh; background: var(--bg); color: var(--text);
+     default, and so on down. The field widths that clipped their own
+     placeholders at a larger default have followed the type into rem; padding
+     and the sidebar are still px, and still deliberate. */
+  /* dvh after vh, every time: on a phone 100vh is the viewport with the
+     browser's toolbars retracted, so a full-height box measured in vh is
+     taller than the screen actually is and its last line sits under the
+     toolbar. Older engines ignore the dvh line and keep the vh one. */
+  .app { display: flex; min-height: 100vh; min-height: 100dvh; background: var(--bg); color: var(--text);
     font: 0.875rem/1.45 -apple-system, "Segoe UI", Inter, Roboto, sans-serif; }
 
   /* Text for assistive technology only: still in the accessibility tree, still
@@ -1919,8 +2007,23 @@ const CSS = `
   .mono, .amt, .num-in, .stat-value, .acc-bal, td.mono, .tl-item b { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
 
   /* nav */
-  .nav { width: 216px; flex: none; background: var(--surface-nav); border-right: 1px solid var(--border-soft); padding: 18px 10px; display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; height: 100vh; }
+  /* overflow-y, because the ten sections plus the brand need about 420px and a
+     phone held sideways — or a browser at 200% text — has less than that. With
+     the height pinned to the viewport and nothing scrolling, the last sections
+     were simply unreachable. */
+  .nav { width: 216px; flex: none; background: var(--surface-nav); border-right: 1px solid var(--border-soft); padding: 18px 10px; display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; height: 100vh; height: 100dvh; overflow-y: auto; }
   .brand { display: flex; gap: 10px; align-items: center; padding: 4px 8px 18px; }
+  /* Both hidden until the sidebar becomes a drawer, so neither is a tab stop
+     on a screen where every section is already on show. */
+  .nav-toggle { display: none; align-items: center; gap: 8px; background: transparent; border: 1px solid var(--border-strong);
+    color: var(--text-label); border-radius: 7px; padding: 8px 11px; font: inherit; font-size: 0.75rem; cursor: pointer; }
+  .nav-toggle:hover { color: var(--text); border-color: var(--accent-deep); }
+  .nav-toggle-ic { font-size: 0.9375rem; line-height: 1; }
+  .nav-close { display: none; margin-left: auto; place-items: center; width: 34px; height: 34px; flex: none;
+    background: transparent; border: 1px solid var(--border-strong); border-radius: 7px; color: var(--text-label);
+    font: inherit; font-size: 0.875rem; cursor: pointer; }
+  .nav-close:hover { color: var(--text); border-color: var(--accent-deep); }
+  .nav-scrim { display: none; position: fixed; inset: 0; z-index: 55; background: var(--scrim); }
   .brand-mark { width: 34px; height: 34px; border-radius: 8px; background: linear-gradient(135deg, var(--brand-grad-from), var(--accent-deep)); display: grid; place-items: center; color: var(--brand-mark-text); font-size: 1.0625rem; }
   .brand-name { font-weight: 700; letter-spacing: .18em; font-size: 0.75rem; color: var(--text-strong); }
   .brand-sub { font-size: 0.625rem; color: var(--text-muted); letter-spacing: .04em; }
@@ -2017,19 +2120,24 @@ const CSS = `
   input, select { background: var(--surface-sunken); border: 1px solid var(--border-strong); color: var(--text); border-radius: 6px; padding: 5px 8px; font: inherit; }
   input:focus, select:focus { border-color: var(--accent-deep); }
   input:disabled, select:disabled { cursor: default; }
-  .cat-sel { max-width: 175px; font-size: 0.75rem; }
-  .cell-in { width: 100%; max-width: 170px; background: transparent; border-color: transparent; }
+  /* These widths were px against type in rem, so at a 20px browser default the
+     boxes stayed put while their contents grew and the placeholders clipped
+     mid-word — "Investment Contribut", "Amount (− = o". In rem they are the
+     same size at the 16px default and grow with the text. */
+  .cat-sel { max-width: 10.9375rem; font-size: 0.75rem; }
+  .cell-in { width: 100%; max-width: 10.625rem; background: transparent; border-color: transparent; }
   .cell-in:hover, .cell-in:focus { border-color: var(--border-strong); background: var(--surface-sunken); }
-  .cell-in.day { width: 54px; }
-  .num-in { width: 110px; text-align: right; }
-  .num-in.pct { width: 74px; }
+  .cell-in.day { width: 3.375rem; }
+  .num-in { width: 6.875rem; text-align: right; }
+  .num-in.pct { width: 4.625rem; }
   input.invalid, input.invalid:focus { border-color: var(--neg); }
   .in-wrap { display: inline-flex; flex-direction: column; gap: 3px; align-items: flex-end; }
-  .in-err { font-size: 0.6875rem; line-height: 1.3; color: var(--neg); max-width: 220px; text-align: right; }
+  .in-err { font-size: 0.6875rem; line-height: 1.3; color: var(--neg); max-width: 13.75rem; text-align: right; }
   .form .in-wrap, .add-row .in-wrap { align-items: flex-start; }
   .form .in-err, .add-row .in-err { text-align: left; }
   .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .filters input { width: 170px; }
+  .filters input { width: 10.625rem; }
+  .filters input, .filters select { max-width: 100%; min-width: 0; }
   .form { display: flex; flex-direction: column; gap: 10px; }
   .form.form-row { flex-direction: row; flex-wrap: wrap; gap: 16px; }
   .form label { display: flex; flex-direction: column; gap: 4px; font-size: 0.6875rem; color: var(--text-muted-2); letter-spacing: .04em; }
@@ -2073,8 +2181,12 @@ const CSS = `
   .tl-item.paid { background: var(--accent-bg); border-color: var(--accent-border); color: var(--accent); }
 
   /* imports */
-  .steps { display: flex; gap: 10px; }
-  .step { flex: 1; display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; color: var(--text-muted); font-size: 0.8125rem; }
+  /* Three steps in a row that never wrapped: below about 600px each one had
+     roughly 190px for two lines of text and its numbered disc, and the words
+     broke mid-syllable. They keep their equal thirds wherever three of them
+     fit and stack once they do not. */
+  .steps { display: flex; gap: 10px; flex-wrap: wrap; }
+  .step { flex: 1 1 14rem; display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; color: var(--text-muted); font-size: 0.8125rem; }
   .step.on { border-color: var(--accent-deep); color: var(--step-on-text); }
   .step.done { color: var(--text-muted-2); }
   .step-n { width: 22px; height: 22px; border-radius: 50%; border: 1px solid currentColor; display: grid; place-items: center; font-size: 0.6875rem; flex: none; }
@@ -2113,7 +2225,7 @@ const CSS = `
   /* The explanation itself, on the page rather than in a title attribute no
      keyboard or touch user can summon. Resets the inherited table-header and
      stat-label casing so the sentence reads as a sentence. */
-  .help-body { position: absolute; z-index: 40; top: calc(100% + 7px); right: -6px; width: 250px;
+  .help-body { position: absolute; z-index: 40; top: calc(100% + 7px); right: -6px; width: min(250px, calc(100vw - 2rem));
     background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: 9px;
     padding: 9px 11px; color: var(--text-soft); font-size: 0.71875rem; line-height: 1.5; font-weight: 400;
     letter-spacing: normal; text-transform: none; text-align: left; white-space: pre-wrap; }
@@ -2128,5 +2240,62 @@ const CSS = `
     .nav { width: 64px; } .nav .brand-name, .nav .brand-sub, .nav-item { font-size: 0; }
     .nav-item .nav-ic { font-size: 0.9375rem; } .nav-foot, .nav-badge { display: none; }
     .timeline { grid-template-columns: repeat(4, 1fr); }
+    /* Chromium does not count a flex column's own bottom padding as scrollable
+       overflow, so on a phone held sideways the last section still finished 9px
+       under the fold at the very end of the scroll. A real item at the end is
+       counted. Only below this width, where the sidebar is short of room in the
+       first place: above it this would push the footer up for nothing. */
+    .nav::after { content: ""; flex: none; height: 18px; }
+  }
+
+  /* Phone. Everything below this width was untouched before: a 64px rail of
+     unlabelled glyphs eating a sixth of the screen, a topbar that could not
+     wrap, and twelve months of timeline in four columns of 60px. The rail is
+     the main thing — pinned full-height beside 311px of content it is not a
+     sidebar, it is a wall. It becomes a drawer, which buys the page its width
+     back and hands the section names back with it. */
+  @media (max-width: 720px) {
+    .main { padding: 0 14px 32px; }
+    .topbar { flex-wrap: wrap; gap: 10px 12px; padding: 10px 0 12px; }
+    .crumb { font-size: 1rem; }
+    .month-sel { flex: none; }
+    .scen-pill { margin-left: auto; }
+    .card { padding: 14px; }
+    .card-head { flex-wrap: wrap; }
+    .filters { width: 100%; }
+    .filters input, .filters select { flex: 1 1 8rem; width: auto; }
+    /* A percentage width contributes nothing to a column's minimum, so once a
+       table is squeezed to its narrowest these fields collapsed to a letter or
+       two — "Te" on the row that says Tennis Club, and a single "C" on three
+       others. A floor gives the column something to hold on to. The
+       day-of-month box brings its own width and does not want one. */
+    .tbl .cell-in { min-width: 8rem; }
+    .tbl .cell-in.day { min-width: 0; }
+    /* Four columns leaves each month 60px, which is narrower than the amounts
+       written inside it. Two is the most this width will carry. */
+    .timeline { grid-template-columns: repeat(2, 1fr); }
+    .bar-row { grid-template-columns: 7rem 1fr 5.5rem; }
+
+    .nav-toggle { display: inline-flex; }
+    .nav-close { display: inline-grid; }
+    .nav-scrim { display: block; }
+    .nav { position: fixed; top: 0; left: 0; bottom: 0; z-index: 60; width: min(17rem, 84vw);
+      padding: 14px 10px; border-right: 1px solid var(--border-strong);
+      transform: translateX(-100%); visibility: hidden; transition: transform .18s ease, visibility 0s linear .18s; }
+    /* visibility, not opacity: a drawer that is only translated off-screen is
+       still in the tab order, and Tab would walk into a menu nobody can see.
+       It is switched, never interpolated — a transition on visibility leaves
+       the panel computing as hidden for a frame after it opens, and the focus
+       move that follows is dropped on the floor. Held back for the length of
+       the slide on the way out, so the drawer is not gone before it has left. */
+    .nav[data-open="true"] { transform: none; visibility: visible; transition: transform .18s ease, visibility 0s; }
+    .nav .brand-name { font-size: 0.75rem; } .nav .brand-sub { font-size: 0.625rem; }
+    .nav-item { font-size: 0.8125rem; } .nav-item .nav-ic { font-size: inherit; }
+    .nav-foot, .nav-badge { display: block; }
+  }
+
+  /* The drawer is the only thing in this app that moves. */
+  @media (prefers-reduced-motion: reduce) {
+    .nav { transition: none; }
   }
 `;
