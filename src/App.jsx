@@ -277,7 +277,7 @@ const seedSnapshots = [
   { id: uid("snap"), accountId: "acc_crypto", date: D(2),  balanceC: 3200000 },
 ];
 
-const initialState = {
+export const initialState = {
   settings: { currency: "R", currentAge: 42, retirementAge: 65, planningAge: 90, inflationPct: 5.0, investReturnPct: 9.0, cashReturnPct: 4.0, cryptoReturnPct: 9.0, dayFirstDates: true, theme: "dark" },
   comp: { salaryMonthlyC: 8500000, bonusTargetPct: 15, bonusMonth: 12, salaryGrowthPct: 5.5 }, // Table 5
   mortgage: { balanceC: 185000000, ratePct: 10.5, termMonths: 216, fixedExpiry: ymAdd(CUR_YM, 14), paymentOverrideC: 1850000, propertyValueC: 320000000 },
@@ -292,6 +292,45 @@ const initialState = {
   audit: [
     { id: uid("aud"), when: `${D(13)} 09:12`, kind: "import", detail: `Committed seed batch: ${seedTxns.length} transactions across 2 accounts` },
   ],
+  scenario: { enabled: false, salaryPct: 0, spendPct: 0, inflationDelta: 0, rateDelta: 0, returnDelta: 0 },
+};
+
+/* The empty model behind Reset on the Settings page. Same keys as
+   initialState, so a reset row loads back through exactly the same paths as
+   any other — with nothing in it. Its arrays are its own: sharing one with
+   initialState would let an edit to a reset model reach back into the seed.
+
+   Two things are deliberately not emptied, because nothing in the app can put
+   them back. No page anywhere creates an account or a category — both exist
+   only as the rows seeded here. So `accounts: []` would leave a reset user
+   looking at "this model has no accounts, so there is nowhere to record a
+   transaction" for good, and `categories: []` would empty every category
+   dropdown in the app while cat_uncat and cat_general stayed hardcoded in the
+   import and add-transaction paths. The accounts are kept with every figure
+   at zero; the category list is a taxonomy rather than the user's own data
+   and is kept whole.
+
+   Three fields hold their defaults rather than going to zero, because zero is
+   not a value the rest of the code can read. The ages are bounded 18-120 by
+   ageError and buildLongTerm projects planningAge - currentAge years, so a
+   zero there is both rejected by the form and a plan with no rows. bonusMonth
+   is drawn as MONTHS[bonusMonth - 1] on the Compensation page, and fixedExpiry
+   is read by ymLabel — a zero and an empty string respectively put the word
+   "undefined" on the screen. With the money at zero none of the three changes
+   a single figure. */
+export const blankState = {
+  settings: { currency: "R", currentAge: 42, retirementAge: 65, planningAge: 90, inflationPct: 0, investReturnPct: 0, cashReturnPct: 0, cryptoReturnPct: 0, dayFirstDates: true, theme: "dark" },
+  comp: { salaryMonthlyC: 0, bonusTargetPct: 0, bonusMonth: 12, salaryGrowthPct: 0 },
+  mortgage: { balanceC: 0, ratePct: 0, termMonths: 0, fixedExpiry: CUR_YM, paymentOverrideC: 0, propertyValueC: 0 },
+  categories: seedCategories.map((c) => ({ ...c })),
+  accounts: seedAccounts.map((a) => ({ ...a, openingC: 0, openingYm: CUR_YM })),
+  recurring: [],
+  annual: [],
+  rules: [],
+  txns: [],
+  snapshots: [],
+  batches: [],
+  audit: [],
   scenario: { enabled: false, salaryPct: 0, spendPct: 0, inflationDelta: 0, rateDelta: 0, returnDelta: 0 },
 };
 
@@ -595,6 +634,34 @@ export default function App({ boot = null, onPersist = null }) {
 
   const goTxns = (filter) => { setTxnFilter({ account: "all", category: "all", search: "", ...filter }); setPage("transactions"); };
 
+  /* Reset writes the empty model through update() like any other edit, so the
+     persist effect saves it and the audit trail carries one line saying it
+     happened. Deleting the stored row instead would be indistinguishable from
+     a brand-new account on the next load, and the demo model would be seeded
+     straight back over the top of it. Nothing in localStorage is touched: the
+     sign-in token lives there, and so does the theme.
+
+     The theme goes into the empty model rather than reverting with everything
+     else, because it is the one setting the user is looking at while they do
+     this — resetting the colours out from under them is not what the button
+     says it does.
+
+     The ephemeral state around the model has to come back too. The month, the
+     transaction filter and the page were all chosen against data that no
+     longer exists: left alone they leave a filter pointing at nothing and a
+     table that has simply gone blank. */
+  const resetModel = () => {
+    update(
+      () => ({ ...blankState, settings: { ...blankState.settings, theme } }),
+      "reset",
+      "Reset the model — every transaction, item, rule, import and balance cleared, and every figure set to zero"
+    );
+    setPage("overview");
+    setYm(nowYm());
+    setTxnFilter({ account: "all", category: "all", search: "" });
+    setNavOpen(false);
+  };
+
   const fc = useMemo(() => buildForecast(state, null), [state]);
   const fcScen = useMemo(() => (state.scenario.enabled ? buildForecast(state, state.scenario) : null), [state]);
   const lt = useMemo(() => buildLongTerm(state, null), [state]);
@@ -689,7 +756,7 @@ export default function App({ boot = null, onPersist = null }) {
         {page === "forecast" && <Forecast {...{ state, update, cur, fc, fcScen, palette }} />}
         {page === "longterm" && <LongTerm {...{ state, update, cur, lt, ltScen, palette }} />}
         {page === "imports" && <Imports {...{ state, update, cur, cats, catName, accName }} />}
-        {page === "settings" && <Settings {...{ state, update, cur, fc, lt, catName, accName, theme, setTheme }} />}
+        {page === "settings" && <Settings {...{ state, update, cur, fc, lt, catName, accName, theme, setTheme, resetModel }} />}
       </main>
     </div>
   );
@@ -1914,7 +1981,45 @@ function Imports({ state, update, cur, cats, catName, accName }) {
 /* ============================================================
    SETTINGS · EXPORT · AUDIT TRAIL
    ============================================================ */
-function Settings({ state, update, cur, fc, lt, catName, accName, theme, setTheme }) {
+/* Clearing the model is irreversible and there is no undo, so the button arms
+   first and a second click commits it — the same shape as DeleteCell, for the
+   same reason, and again with no modal and no new dependency. */
+const ResetCard = ({ onReset }) => {
+  const [armed, setArmed] = useState(false);
+  const armRef = useRef(null);
+  const confirmRef = useRef(null);
+  const wasArmed = useRef(false);
+  /* Focus follows the question: onto the confirmation when it appears, back
+     onto the button that raised it when the answer is "keep". Both wait for
+     the render that creates the button being focused. */
+  useEffect(() => {
+    if (armed) { if (confirmRef.current) confirmRef.current.focus(); }
+    else if (wasArmed.current && armRef.current) armRef.current.focus();
+    wasArmed.current = armed;
+  }, [armed]);
+  return (
+    <Card className="span3 reset-card" title="Start again with an empty model">
+      <p className="muted">Reset empties the model so you can enter your own figures on a clean sheet. It removes every transaction, every recurring and annual item, every import rule, the record of every statement you have imported, every investment and crypto balance you have entered, and the audit trail below. It sets your salary, bonus, mortgage, property value, inflation and every return rate to zero.</p>
+      <p className="muted">Your accounts and the category list stay, because there is nowhere in the app to make a new one — the four accounts keep their names, with every balance at zero. Your ages stay as they are, since the long-term plan needs somewhere to run to. You stay signed in and the theme you are reading this in does not change.</p>
+      <p className="muted">This cannot be undone. Export above is the only way to keep a copy of what is here now, so take it first if you want one. When you are signed in, the empty model is saved to your account in place of what was there. In demo mode nothing is saved either way.</p>
+      {/* Kept mounted so the text swap is a live-region update, not a new region */}
+      <span className="sr-only" role="status">{armed ? "Reset the model? Waiting for confirmation." : ""}</span>
+      {armed ? (
+        <div className="confirm reset-confirm">
+          <span className="confirm-q">Clear everything and start again?</span>
+          <button ref={confirmRef} className="btn danger" onClick={() => { setArmed(false); onReset(); }}>Yes, clear everything</button>
+          <button className="btn ghost" onClick={() => setArmed(false)}>Keep my figures</button>
+        </div>
+      ) : (
+        <div className="reset-confirm">
+          <button ref={armRef} className="btn danger" onClick={() => setArmed(true)}>Reset the model</button>
+        </div>
+      )}
+    </Card>
+  );
+};
+
+function Settings({ state, update, cur, fc, lt, catName, accName, theme, setTheme, resetModel }) {
   const st = state.settings;
   const set = (patch, msg) => update((s) => ({ ...s, settings: { ...s.settings, ...patch } }), "edit", msg);
   return (
@@ -1957,6 +2062,9 @@ function Settings({ state, update, cur, fc, lt, catName, accName, theme, setThem
         </div>
         <p className="muted-s" style={{ marginTop: 10 }}>When you are signed in, every change is saved to your account on its own, and nobody else can read it. In demo mode nothing is saved — close the tab and the figures are gone, so export anything you want to keep.</p>
       </Card>
+      {/* Directly under Export, so "save a copy first" is the sentence above
+          the button rather than advice given somewhere else. */}
+      <ResetCard onReset={resetModel} />
       <Card className="span3" title="Audit trail" right={<span className="muted-s">{state.audit.length} events — every import, edit, exclusion and rule change</span>}>
         <TableScroll label="Audit trail" maxHeight={340}>
           <table className="tbl">
@@ -2154,12 +2262,25 @@ const CSS = `
   .btn:disabled { background: var(--chip-bg); color: var(--text-muted-2); border-color: var(--border-strong); cursor: default; }
   .btn.ghost { background: transparent; border-color: var(--border-strong); color: var(--text-muted-2); }
   .btn.ghost:hover { color: var(--text); border-color: var(--accent-deep); }
+  /* Destructive, in the same amber/sienna the app already uses for money out.
+     Hover fills rather than darkens, because --neg-bg and --neg-bg-2 are the
+     same colour in the light theme and a darker shade there would be no
+     change at all. */
+  .btn.danger { background: var(--neg-bg); color: var(--neg); border-color: var(--neg-border); }
+  .btn.danger:hover { background: var(--neg); color: var(--on-accent); border-color: var(--neg); }
   .mini { background: transparent; border: 1px solid transparent; color: var(--text-muted); border-radius: 5px; padding: 2px 7px; cursor: pointer; font-size: 0.75rem; }
   .mini:hover { color: var(--accent); border-color: var(--border-strong); }
   .mini.danger { color: var(--neg); border-color: var(--neg-border); }
   .mini.danger:hover { color: var(--neg); background: var(--neg-bg); }
   .confirm { display: inline-flex; gap: 6px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
   .confirm-q { font-size: 0.71875rem; color: var(--text-soft); }
+  /* The reset question sits in a card rather than a table row, so it reads
+     from the left like the paragraphs above it. */
+  .reset-confirm { display: flex; gap: 10px; align-items: center; justify-content: flex-start; flex-wrap: wrap; margin-top: 14px; }
+  .reset-confirm .confirm-q { font-size: 0.8125rem; }
+  /* The reset for margins at the top of this stylesheet runs three paragraphs
+     of consequences together into one block of text. */
+  .reset-card p + p { margin-top: 8px; }
 
   .banner { grid-column: span 3; background: var(--accent-bg-banner); border: 1px solid var(--accent-border); color: var(--accent-text-soft); border-radius: 10px; padding: 10px 14px; font-size: 0.8125rem; margin-bottom: 12px; }
   .banner.warn { background: var(--neg-bg); border-color: var(--neg-border); color: var(--neg-text-soft); }
