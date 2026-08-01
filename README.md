@@ -33,6 +33,14 @@ Then, in Supabase → Authentication → URL Configuration, set your deployed UR
 
 That's it — share the URL and anyone can create an account. The anon key is safe to expose in the client; row-level security means users can only ever read and write their own row.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and every pull request, on Node 22: `npm ci`, then `npm test`, then `npm run build`. If any of the three fails, the run is red.
+
+It ends with `npm run check:env`, which only reports — it never fails the run. Read it, because what it reports is easy to miss: **without `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` the build still succeeds.** The Supabase client isn't merely idle in that case, it is tree-shaken out of the bundle altogether, so a perfectly green build can be an app that signs nobody in and saves nothing. That is what you want locally and in the tests; it is not what you want on a URL you have given to other people. CI has no Supabase variables of its own, so its check will normally say demo mode — nothing is deployed from CI. Set both variables in Vercel or Netlify, and redeploy after you add them.
+
+If you want a hard gate in a deploy pipeline, `node scripts/check-env.mjs --require` exits non-zero when either variable is missing. `npm run check:env -- --help` explains the rest. Neither changes how the app behaves at runtime.
+
 ## Notes
 
 - **Data model**: state is held as relational tables in memory (accounts, transactions, categories, rules, annual items, compensation, mortgage, batches, snapshots, audit) and persisted as one JSONB document per user with a debounced autosave. Migrating to fully normalised tables later doesn't require app changes beyond the load/save layer in `src/main.jsx`.
