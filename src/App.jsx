@@ -646,13 +646,23 @@ export default function App({ boot = null, onPersist = null }) {
      this — resetting the colours out from under them is not what the button
      says it does.
 
+     The three ages travel with it, for the same kind of reason. They are facts
+     about the person rather than figures about their money, and unlike the
+     money they cannot be cleared: ageError bounds them at 18-120 and
+     buildLongTerm runs planningAge - currentAge years, so something has to be
+     chosen and the only candidates are the user's own numbers or the demo's.
+     blankState keeps 42/65/90 for a genuinely new model, but a 55-year-old who
+     resets should not come back as 42 with a plan quietly drawn over the wrong
+     thirty-five years.
+
      The ephemeral state around the model has to come back too. The month, the
      transaction filter and the page were all chosen against data that no
      longer exists: left alone they leave a filter pointing at nothing and a
      table that has simply gone blank. */
   const resetModel = () => {
     update(
-      () => ({ ...blankState, settings: { ...blankState.settings, theme } }),
+      (s) => ({ ...blankState, settings: { ...blankState.settings, theme,
+        currentAge: s.settings.currentAge, retirementAge: s.settings.retirementAge, planningAge: s.settings.planningAge } }),
       "reset",
       "Reset the model — every transaction, item, rule, import and balance cleared, and every figure set to zero"
     );
@@ -1419,7 +1429,7 @@ function Annual({ state, update, cur, ym, cats, goTxns }) {
         <TableScroll label="Annual and irregular expenses">
         <table className="tbl">
           <thead><tr><th scope="col">Item</th><th scope="col">Category</th><th scope="col">Month</th><th scope="col" className="r">Amount</th>
-            <th scope="col">Annual increase %<Help of="the annual increase column" text="How much this bill goes up each year. Applied on top of the amount for every year the forecast and the long-term plan run — 0 keeps it flat." /></th>
+            <th scope="col">Annual increase %<Help of="the annual increase column" text="How much this bill goes up each year. Only the twelve-month forecast uses it, applying it once the forecast crosses into the next calendar year; the long-term plan ignores it and grows annual bills by inflation instead — 0 keeps this item flat in the forecast." /></th>
             <th scope="col">Status · {year}</th>
             <th scope="col" className="r">Variance<Help of="the variance column" text="The gap between the amount you planned for and what actually went through." /></th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
           <tbody>
@@ -2008,7 +2018,7 @@ const ResetCard = ({ onReset }) => {
   }, [armed]);
   return (
     <Card className="span3 reset-card" title="Start again with an empty model">
-      <p className="muted">Reset empties the model so you can enter your own figures on a clean sheet. It removes every transaction, every recurring and annual item, every import rule, the record of every statement you have imported, every investment and crypto balance you have entered, and the audit trail below. It sets your salary, bonus, mortgage, property value, inflation and every return rate to zero.</p>
+      <p className="muted">Reset empties the model so you can enter your own figures on a clean sheet. It removes every transaction, every recurring and annual item, every import rule, the record of every statement you have imported, every investment and crypto balance you have entered, and the audit trail below, down to a single line recording the reset itself. It sets your salary, bonus, mortgage, property value, inflation and every return rate to zero.</p>
       <p className="muted">Your accounts and the category list stay, because there is nowhere in the app to make a new one — the four accounts keep their names, with every balance at zero. Your ages stay as they are, since the long-term plan needs somewhere to run to. You stay signed in and the theme you are reading this in does not change.</p>
       <p className="muted">This cannot be undone. Export above is the only way to keep a copy of what is here now, so take it first if you want one. When you are signed in, the empty model is saved to your account in place of what was there. In demo mode nothing is saved either way.</p>
       {/* Kept mounted so the text swap is a live-region update, not a new region */}
@@ -2108,7 +2118,7 @@ function Settings({ state, update, cur, fc, lt, catName, accName, theme, setThem
    of headings deep and reads in order. */
 function Governance({ cur }) {
   return (
-    <div className="grid">
+    <div className="grid governance-guide">
       <Card className="span3" title="What Ledgerline is for">
         <p className="muted">
           Ledgerline holds two pictures of your money side by side: what you planned, and what actually happened.
@@ -2319,11 +2329,13 @@ function Governance({ cur }) {
           page. The accounts stay under their own names with every balance at zero.
         </p>
         <p className="muted">
-          A few settings go back to their defaults rather than dropping to zero, because zero is not a value the rest
-          of the app can read: the current, retirement and planning ages, the month the bonus is paid in, and the month
-          the fixed rate expires. With every amount at zero none of them changes a single figure, but if the ages
-          mattered to you, set them again afterwards. You stay signed in, and the theme you are reading this in does
-          not change.
+          Your current, retirement and planning ages are kept exactly as you have them. They are facts about you rather
+          than figures about your money, and the long-term plan has to run from one of them to another, so there is no
+          version of a reset that leaves them empty — carrying yours across is the only answer that keeps the plan
+          covering your own years. Two other settings do go back to their defaults, because zero is not a value the rest
+          of the app can read: the month the bonus is paid in, and the month the fixed rate expires. With every amount
+          at zero neither of them changes a single figure. You stay signed in, and the theme you are reading this in
+          does not change.
         </p>
         <div className="callout">
           Reset cannot be undone — there is no undo in this app — and when you are signed in the empty model is saved
@@ -2538,6 +2550,11 @@ const CSS = `
   /* The reset for margins at the top of this stylesheet runs three paragraphs
      of consequences together into one block of text. */
   .reset-card p + p { margin-top: 8px; }
+  /* Same reset, same problem, four paragraphs at a time: the guide is nothing
+     but prose, and without this every card on it is one unbroken block. Scoped
+     to the guide rather than written as a global p + p, which would reflow
+     every other page in the app. */
+  .governance-guide p + p { margin-top: 8px; }
 
   .banner { grid-column: span 3; background: var(--accent-bg-banner); border: 1px solid var(--accent-border); color: var(--accent-text-soft); border-radius: 10px; padding: 10px 14px; font-size: 0.8125rem; margin-bottom: 12px; }
   .banner.warn { background: var(--neg-bg); border-color: var(--neg-border); color: var(--neg-text-soft); }
