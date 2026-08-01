@@ -8,6 +8,7 @@ import {
   isReadableAmount, isReadableNumber, ageError, termMonthsError,
   AGE_MIN, AGE_MAX, TERM_MONTHS_MAX,
   initialState, blankState,
+  uid, hydrate, SCHEMA_VERSION,
 } from "./App.jsx";
 
 /* Frozen "now" used by every test that touches nowYm()/todayISO(). */
@@ -1110,5 +1111,214 @@ describe("blankState", () => {
      year is the year the money runs out, and the Overview says so. */
   it("reports the retirement age as the depletion age, there being nothing to live on", () => {
     expect(buildLongTerm(blankState, null).depletionAge).toBe(blankState.settings.retirementAge);
+  });
+});
+
+/* ============================================================
+   uid — ids that do not collide with a saved model
+   ============================================================ */
+describe("uid", () => {
+  const UUID_ID = /^[a-z]+_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+  it("gives a different id every time it is asked", () => {
+    const ids = new Set();
+    for (let i = 0; i < 20000; i++) ids.add(uid("txn"));
+    expect(ids.size).toBe(20000);
+  });
+
+  it("keeps the type prefix in front of the id", () => {
+    expect(uid("txn")).toMatch(/^txn_/);
+    expect(uid("batch")).toMatch(/^batch_/);
+  });
+
+  it("mints a version-4 uuid", () => {
+    expect(uid("rec")).toMatch(UUID_ID);
+  });
+
+  /* randomUUID needs a secure context, which Safari before 15.4 has not got.
+     Take it away and the hand-rolled fallback has to produce the same thing. */
+  it("still mints distinct v4 ids where randomUUID is missing", () => {
+    const real = globalThis.crypto;
+    vi.stubGlobal("crypto", { getRandomValues: (a) => real.getRandomValues(a) });
+    try {
+      expect(globalThis.crypto.randomUUID).toBeUndefined();
+      const ids = new Set();
+      for (let i = 0; i < 2000; i++) {
+        const id = uid("txn");
+        expect(id).toMatch(UUID_ID);
+        ids.add(id);
+      }
+      expect(ids.size).toBe(2000);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not hand back an id the seeded model is already using", () => {
+    const seeded = new Set(
+      [...initialState.txns, ...initialState.recurring, ...initialState.annual,
+       ...initialState.rules, ...initialState.snapshots, ...initialState.audit].map((r) => r.id)
+    );
+    for (let i = 0; i < 1000; i++) expect(seeded.has(uid("txn"))).toBe(false);
+  });
+});
+
+/* ============================================================
+   hydrate — repairing a saved model on the way in
+   ============================================================ */
+describe("hydrate", () => {
+  freezeNow();
+
+  /* A saved blob is the whole model as JSONB, so start from a copy of one and
+     damage it in the one way each test is about. */
+  const savedBlob = (damage = {}) => ({ ...structuredClone(initialState), ...damage });
+  const drop = (key) => { const b = savedBlob(); delete b[key]; return b; };
+
+  it("fills a top-level key the saved model has not got", () => {
+    const st = hydrate(drop("scenario"));
+    expect(st.scenario).toEqual(initialState.scenario);
+  });
+
+  it("fills every top-level key, one at a time, whichever one is missing", () => {
+    Object.keys(initialState).forEach((key) => {
+      const st = hydrate(drop(key));
+      expect(st[key], key).not.toBeUndefined();
+    });
+  });
+
+  it("fills a missing sub-key of settings, comp, mortgage and scenario", () => {
+    const b = savedBlob();
+    delete b.settings.theme;         // absent on rows saved before the theme existed
+    delete b.mortgage.propertyValueC; // absent on rows saved before the property figure existed
+    delete b.comp.salaryGrowthPct;
+    delete b.scenario.rateDelta;
+    const st = hydrate(b);
+    expect(st.settings.theme).toBe(initialState.settings.theme);
+    expect(st.mortgage.propertyValueC).toBe(initialState.mortgage.propertyValueC);
+    expect(st.comp.salaryGrowthPct).toBe(initialState.comp.salaryGrowthPct);
+    expect(st.scenario.rateDelta).toBe(initialState.scenario.rateDelta);
+  });
+
+  it("keeps what the saved model did say while filling what it did not", () => {
+    const st = hydrate(savedBlob({ settings: { currency: "£", currentAge: 51 } }));
+    expect(st.settings.currency).toBe("£");
+    expect(st.settings.currentAge).toBe(51);
+    expect(st.settings.inflationPct).toBe(initialState.settings.inflationPct);
+  });
+
+  it("leaves a key it has never heard of exactly where it found it", () => {
+    const st = hydrate(savedBlob({ goals: [{ id: "g1", name: "New roof" }], nickname: "Alex" }));
+    expect(st.goals).toEqual([{ id: "g1", name: "New roof" }]);
+    expect(st.nickname).toBe("Alex");
+  });
+
+  it("puts an array back where something that is not an array was saved", () => {
+    [null, {}, "txns", 7].forEach((junk) => {
+      const st = hydrate(savedBlob({ accounts: junk }));
+      expect(Array.isArray(st.accounts), String(junk)).toBe(true);
+      expect(st.accounts.map((a) => a.id)).toEqual(initialState.accounts.map((a) => a.id));
+    });
+  });
+
+  it("shares no row with the seeded model when it replaces an array", () => {
+    const st = hydrate(savedBlob({ accounts: null }));
+    expect(st.accounts).not.toBe(initialState.accounts);
+    st.accounts.forEach((a, i) => expect(a).not.toBe(initialState.accounts[i]));
+  });
+
+  it("stamps the schema version on, over whatever was saved there", () => {
+    expect(hydrate(drop("schemaVersion")).schemaVersion).toBe(SCHEMA_VERSION);
+    expect(hydrate(savedBlob({ schemaVersion: 0 })).schemaVersion).toBe(SCHEMA_VERSION);
+  });
+
+  it("takes a blob that is not a model at all rather than throwing", () => {
+    [null, undefined, "nonsense", 42, []].forEach((junk) => {
+      expect(hydrate(junk).settings, String(junk)).toEqual(initialState.settings);
+    });
+  });
+
+  it("remints a duplicate id, keeping it for the row that claimed it first", () => {
+    const twin = { ...initialState.txns[0] };
+    const st = hydrate(savedBlob({ txns: [initialState.txns[0], twin] }));
+    expect(st.txns[0].id).toBe(initialState.txns[0].id);
+    expect(st.txns[1].id).not.toBe(initialState.txns[0].id);
+    expect(st.txns[1].desc).toBe(twin.desc); // the row itself is untouched
+  });
+
+  it("leaves ids alone in a collection where they are already distinct", () => {
+    const st = hydrate(savedBlob());
+    ["recurring", "annual", "rules", "txns", "snapshots", "batches", "audit"].forEach((key) => {
+      expect(st[key].map((r) => r.id), key).toEqual(initialState[key].map((r) => r.id));
+    });
+  });
+
+  it("leaves every collection free of duplicate ids", () => {
+    const dup = (rows) => [...rows, ...rows.map((r) => ({ ...r }))];
+    const st = hydrate(savedBlob({ txns: dup(initialState.txns), audit: dup(initialState.audit), rules: dup(initialState.rules) }));
+    ["txns", "audit", "rules"].forEach((key) => {
+      const ids = st[key].map((r) => r.id);
+      expect(new Set(ids).size, key).toBe(ids.length);
+    });
+  });
+
+  it("moves the transactions across when a batch id is reminted, so the reference still names a batch", () => {
+    const b = savedBlob({ batches: [initialState.batches[0], { ...initialState.batches[0], filename: "second import" }] });
+    const st = hydrate(b);
+    const batchIds = st.batches.map((x) => x.id);
+    expect(new Set(batchIds).size).toBe(2);
+    st.txns.filter((t) => t.batchId).forEach((t) => {
+      expect(batchIds).toContain(t.batchId);
+    });
+    expect(st.txns[0].batchId).toBe(batchIds[1]); // they follow the reminted row
+  });
+
+  it("does not touch an account or category id, which the rest of the model points at", () => {
+    const b = savedBlob({
+      accounts: [...initialState.accounts, { ...initialState.accounts[0] }],
+      categories: [...initialState.categories, { ...initialState.categories[0] }],
+    });
+    const st = hydrate(b);
+    expect(st.accounts.map((a) => a.id)).toEqual(b.accounts.map((a) => a.id));
+    expect(st.categories.map((c) => c.id)).toEqual(b.categories.map((c) => c.id));
+    st.txns.forEach((t) => {
+      expect(st.accounts.some((a) => a.id === t.accountId), t.id).toBe(true);
+      expect(st.categories.some((c) => c.id === t.categoryId), t.id).toBe(true);
+    });
+  });
+
+  it("does not touch the blob it was handed", () => {
+    const b = drop("scenario");
+    b.txns = [initialState.txns[0], { ...initialState.txns[0] }];
+    b.accounts = null;
+    delete b.settings.theme;
+    const before = structuredClone(b);
+    const st = hydrate(b);
+    expect(b).toEqual(before);
+    expect(st).not.toBe(b);
+  });
+
+  /* The lockout this was written for: one absent key and the first render
+     throws, behind an ErrorBoundary whose only offer is to load the same blob
+     again. Settings, and with it Reset, is on the far side of App rendering. */
+  it("hands the engines a model they can run, where the raw blob would have thrown", () => {
+    const b = drop("scenario");
+    delete b.mortgage;
+    expect(() => buildForecast(b, null)).toThrow();
+    const st = hydrate(b);
+    expect(() => buildForecast(st, null)).not.toThrow();
+    expect(() => buildLongTerm(st, null)).not.toThrow();
+    expect(st.accounts.forEach((a) => accountBalance(a, st.txns, st.snapshots))).toBeUndefined();
+    expect(st.settings.currency).toBe(initialState.settings.currency);
+    expect(st.scenario.enabled).toBe(false);
+  });
+
+  /* The original bug, end to end: two rows sharing an id, and the delete every
+     table in the app performs. It used to take both. */
+  it("leaves a delete by id taking exactly one row out of a pair that shared one", () => {
+    const st = hydrate(savedBlob({ recurring: [initialState.recurring[0], { ...initialState.recurring[0] }] }));
+    const doomed = st.recurring[1];
+    const after = st.recurring.filter((x) => x.id !== doomed.id);
+    expect(after).toHaveLength(1);
+    expect(after[0].id).toBe(st.recurring[0].id);
   });
 });

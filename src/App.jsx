@@ -152,8 +152,32 @@ export const parseDateAny = (raw, dayFirst = true) => {
   return isNaN(d) ? null : d.toISOString().slice(0, 10);
 };
 
-let _id = 1000;
-const uid = (p) => `${p}_${++_id}`;
+/* An id has to be unique against the model the user saved months ago, not
+   merely against the ids minted since this page loaded. The counter that stood
+   here started at 1000 on every load, and evaluating this module spends
+   exactly 59 of them on the seed arrays below — nothing ever reseeded it from
+   what came back off the wire. So a returning user's first new transaction was
+   txn_1060 every single time, colliding with the one last session had already
+   given away. Deletes are filter((x) => x.id !== id) and edits are
+   map((x) => x.id === id ? … : x): a collision meant deleting one row deleted
+   its twin, and editing one edited both.
+
+   The prefix stays. It is what says which table a row came from when it turns
+   up in the audit trail or in a console dump.
+
+   randomUUID is only present in a secure context, and Safari before 15.4 has
+   no such thing, so fall back to laying out the sixteen v4 bytes by hand over
+   getRandomValues — present in every browser we care about and in the test
+   environment as well. */
+const uuid4 = () => {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; // version 4
+  b[8] = (b[8] & 0x3f) | 0x80; // variant 10xx
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+};
+export const uid = (p) => `${p}_${uuid4()}`;
 
 /* ============================================================
    SEED DATA — mirrors the seven tables of the spreadsheet model
@@ -277,7 +301,15 @@ const seedSnapshots = [
   { id: uid("snap"), accountId: "acc_crypto", date: D(2),  balanceC: 3200000 },
 ];
 
+/* The shape of a saved model, stamped onto every state that goes to the
+   server so a later client can tell what it is looking at. Version 1 is the
+   shape below. Bump it only when a saved model needs work on the way in that
+   hydrate cannot work out from shape alone — filling a missing key does not
+   need a version, but reinterpreting an existing one would. */
+export const SCHEMA_VERSION = 1;
+
 export const initialState = {
+  schemaVersion: SCHEMA_VERSION,
   settings: { currency: "R", currentAge: 42, retirementAge: 65, planningAge: 90, inflationPct: 5.0, investReturnPct: 9.0, cashReturnPct: 4.0, cryptoReturnPct: 9.0, dayFirstDates: true, theme: "dark" },
   comp: { salaryMonthlyC: 8500000, bonusTargetPct: 15, bonusMonth: 12, salaryGrowthPct: 5.5 }, // Table 5
   mortgage: { balanceC: 185000000, ratePct: 10.5, termMonths: 216, fixedExpiry: ymAdd(CUR_YM, 14), paymentOverrideC: 1850000, propertyValueC: 320000000 },
@@ -319,6 +351,7 @@ export const initialState = {
    "undefined" on the screen. With the money at zero none of the three changes
    a single figure. */
 export const blankState = {
+  schemaVersion: SCHEMA_VERSION,
   settings: { currency: "R", currentAge: 42, retirementAge: 65, planningAge: 90, inflationPct: 0, investReturnPct: 0, cashReturnPct: 0, cryptoReturnPct: 0, dayFirstDates: true, theme: "dark" },
   comp: { salaryMonthlyC: 0, bonusTargetPct: 0, bonusMonth: 12, salaryGrowthPct: 0 },
   mortgage: { balanceC: 0, ratePct: 0, termMonths: 0, fixedExpiry: CUR_YM, paymentOverrideC: 0, propertyValueC: 0 },
@@ -333,6 +366,95 @@ export const blankState = {
   audit: [],
   scenario: { enabled: false, salaryPct: 0, spendPct: 0, inflationDelta: 0, rateDelta: 0, returnDelta: 0 },
 };
+
+/* ============================================================
+   HYDRATION — making a saved model safe to render
+   ============================================================ */
+
+/* The four keys that hold an object of settings rather than rows. They are
+   filled sub-key by sub-key: a row saved before propertyValueC or theme
+   existed still has a mortgage and still has settings, just with a hole in
+   them, and the app already patches two of those holes by hand at the point
+   of use. */
+const OBJECT_KEYS = ["settings", "comp", "mortgage", "scenario"];
+
+/* The collections whose ids may be reminted, and the prefix to mint with.
+   Nothing in the model points at a recurring, annual, rule, transaction,
+   snapshot, batch or audit row; the single inbound reference anywhere is
+   txns[].batchId -> batches[].id, which is remapped below.
+
+   accounts and categories are deliberately not in here. Their ids are seeded
+   constants rather than minted, so they never collided in the first place,
+   and txns, recurring, annual, rules and snapshots all point at them by id —
+   reminting one would cut every row that names it adrift. */
+const REMINTABLE = { recurring: "rec", annual: "ann", rules: "rule", txns: "txn", snapshots: "snap", batches: "batch", audit: "aud" };
+const ARRAY_KEYS = ["categories", "accounts", ...Object.keys(REMINTABLE)];
+
+/* Everything loaded off the server comes through here first.
+ *
+ * The whole of the migration strategy used to be `boot || initialState`: the
+ * raw JSONB went straight into state with no check on its shape. A blob
+ * missing any one top-level key threw on the first render — state.settings
+ * .currency, state.scenario.enabled, state.accounts.forEach and the six keys
+ * buildForecast destructures are all read before anything is drawn — and the
+ * ErrorBoundary that caught it offered only "Reload the page", which fetched
+ * the same blob and threw in the same place. Settings, and with it Reset, is
+ * behind App rendering at all, so there was no way back in: the user was
+ * locked out of their own data by one absent key.
+ *
+ * Pure, and exported, so all of this is testable without a browser.
+ */
+export function hydrate(saved) {
+  const base = saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+
+  /* Keys we have never heard of ride along untouched. Forward compatibility
+     here is accidental but real and worth keeping: every reducer spreads the
+     whole state and the save writes the whole thing back, so a model touched
+     by an older client must not come back with a newer client's keys quietly
+     stripped out of it. */
+  const out = { ...initialState, ...base, schemaVersion: SCHEMA_VERSION };
+
+  for (const key of OBJECT_KEYS) {
+    const v = out[key];
+    out[key] = v && typeof v === "object" && !Array.isArray(v) ? { ...initialState[key], ...v } : { ...initialState[key] };
+  }
+
+  for (const key of ARRAY_KEYS) {
+    /* null, an object or a string where an array belongs is what actually
+       reaches .forEach, .filter and .map, and one of those throws before the
+       first paint. Rows are copied out of the seed rather than shared with
+       it, so an edit to the repaired model cannot reach back into it. */
+    if (!Array.isArray(out[key])) out[key] = initialState[key].map((row) => ({ ...row }));
+  }
+
+  /* Repairing the damage the old counter has already done to live accounts:
+     rows saved in different sessions can be carrying the same id, and while
+     they do, a delete takes all of them and an edit changes all of them. The
+     first row to claim an id keeps it; every later claimant is reminted. */
+  const batchRemint = new Map(); // old batch id -> fresh one
+  for (const [key, prefix] of Object.entries(REMINTABLE)) {
+    const seen = new Set();
+    out[key] = out[key].map((row) => {
+      const id = row && row.id;
+      if (!seen.has(id)) { seen.add(id); return row; }
+      const fresh = uid(prefix);
+      if (key === "batches") batchRemint.set(id, fresh);
+      return { ...row, id: fresh };
+    });
+  }
+
+  /* Two batches saved under one id cannot be told apart, so the transactions
+     that carry it cannot be divided between them — they follow the reminted
+     row wholesale. Either way one of the two import lines ends up describing
+     rows it did not bring in; what matters is that batchId still names a
+     batch that exists, because it is the only reference of its kind in the
+     model and nothing currently reads it loudly enough to have caught this. */
+  if (batchRemint.size) {
+    out.txns = out.txns.map((t) => (t && batchRemint.has(t.batchId) ? { ...t, batchId: batchRemint.get(t.batchId) } : t));
+  }
+
+  return out;
+}
 
 /* ============================================================
    ENGINES — pure functions over the data model
@@ -573,7 +695,10 @@ export const parseOFX = (text) => {
 };
 
 export default function App({ boot = null, onPersist = null }) {
-  const [state, setState] = useState(boot || initialState);
+  /* A saved model is repaired on the way in; the seeded one is whole already
+     and needs none of it. Lazily, because useState evaluates its argument on
+     every render and only the first one counts. */
+  const [state, setState] = useState(() => (boot ? hydrate(boot) : initialState));
   const booted = useRef(false);
   useEffect(() => {
     if (!booted.current) { booted.current = true; return; } // don't save the freshly-loaded state
