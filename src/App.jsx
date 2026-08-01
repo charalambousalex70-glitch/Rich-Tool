@@ -685,7 +685,15 @@ export default function App({ boot = null, onPersist = null }) {
     ["overview", "Overview", "◈"], ["transactions", "Transactions", "≣"], ["accounts", "Accounts", "⛁"],
     ["recurring", "Recurring Cashflow", "↻"], ["annual", "Annual Expenses", "◔"], ["compensation", "Compensation", "◉"],
     ["forecast", "Forecast", "⟋"], ["longterm", "Long-Term Plan", "∞"], ["imports", "Imports", "⇪"], ["settings", "Settings", "⚙"],
+    /* Last, after Settings: it is reference material rather than a step in the
+       month's work, and appending it leaves the existing order alone. Between
+       1100px and 720px the sidebar is a rail of glyphs with every label at
+       font-size 0, so the glyph is the only thing on screen — ¶ is a text mark
+       and shares no shape with the ten above it. */
+    ["governance", "Governance", "¶"],
   ];
+  /* Deliberately not in this list: the guide is not about a particular month,
+     so the month picker has nothing to pick for it. */
   const showMonthSel = ["overview", "transactions", "forecast", "annual"].includes(page);
 
   return (
@@ -757,6 +765,7 @@ export default function App({ boot = null, onPersist = null }) {
         {page === "longterm" && <LongTerm {...{ state, update, cur, lt, ltScen, palette }} />}
         {page === "imports" && <Imports {...{ state, update, cur, cats, catName, accName }} />}
         {page === "settings" && <Settings {...{ state, update, cur, fc, lt, catName, accName, theme, setTheme, resetModel }} />}
+        {page === "governance" && <Governance {...{ cur }} />}
       </main>
     </div>
   );
@@ -2076,6 +2085,254 @@ function Settings({ state, update, cur, fc, lt, catName, accName, theme, setThem
             </tbody>
           </table>
         </TableScroll>
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================
+   GOVERNANCE — how the app works, in plain English
+   ============================================================ */
+/* Every page in this app explains its own figures, but only once you are
+   already standing on it. Somebody who has just signed in does not know that a
+   "recurring item" is their normal month, that a rule is taught once and paid
+   back every month after, or what the ⚠ is measuring. This is the one page that
+   says all of it in order.
+
+   The only prop is the currency symbol, because the one number quoted here —
+   the floor under the variance flag — is stored in cents and has to be written
+   in whatever symbol the model is set to. Everything else is static prose, so
+   there is nothing to derive and nothing to keep in sync but the words.
+
+   Card gives each block an h2 under the topbar's h1, so the page is one level
+   of headings deep and reads in order. */
+function Governance({ cur }) {
+  return (
+    <div className="grid">
+      <Card className="span3" title="What Ledgerline is for">
+        <p className="muted">
+          Ledgerline holds two pictures of your money side by side: what you planned, and what actually happened.
+          You tell it what you expect to earn and spend in a normal month, you load your bank statements to say what
+          really went through, and it shows you the gap — this month, across the next twelve months, and every year
+          from now to the age you have asked it to plan to.
+        </p>
+        <p className="muted">
+          Nothing here is connected to a bank. Every figure is in the model because you imported a statement, typed it
+          in, or left one of the demo figures in place — so the model is only ever as honest as what you have put into
+          it.
+        </p>
+        <p className="muted-s">
+          Start on Overview. Every figure there has a small <b>?</b> beside its label that says where the number came
+          from and what it leaves out — press it rather than guessing.
+        </p>
+      </Card>
+
+      <Card className="span3" title="Getting your figures in">
+        <p className="muted">
+          Imports takes a statement export in three steps: upload the file, tell the app which column is the date and
+          which is the amount, then review every row before anything is added. The steps are numbered on the page and
+          each one says whether it is done, where you are, or not started yet.
+        </p>
+        <p className="muted">
+          It reads comma-separated files (.csv and .txt), Excel workbooks (.xlsx and .xls) and OFX/QFX. PDF is not
+          read. The upload screen still offers it as experimental, but this build always refuses it and asks for a CSV
+          or XLSX instead — pulling figures reliably out of a PDF layout needs a server-side parser that is not here,
+          and guessing at it would be worse than refusing.
+        </p>
+        <p className="muted">
+          For CSV and Excel the app guesses the columns from the headings, then shows the first five rows exactly as it
+          will read them — so a date read the wrong way round is visible before it is committed, not after. If your
+          bank writes dates day-first, say so under Settings. OFX and QFX skip the mapping step entirely, because the
+          format names its own fields.
+        </p>
+        <p className="muted">
+          The review step is the point of the whole wizard: <b>nothing is saved until you press Commit</b>. Rows that
+          look like something already in the model — same account, same date, same amount, and the first twelve
+          characters of the description the same — are marked as a likely duplicate and unticked for you. Rows with an
+          unreadable date, or an amount that came to zero, are dropped during mapping and counted in a message rather
+          than disappearing quietly.
+        </p>
+        <div className="callout">
+          Everything in one upload lands in the one account you choose on the upload screen, so import one account's
+          statement at a time.
+        </div>
+      </Card>
+
+      <Card className="span3" title="Categories and merchant rules">
+        <p className="muted">
+          Every transaction carries exactly one category, and the categories are what the rest of the app adds up —
+          your spend by category, the match against your plan, the forecast, all of it. A transaction left as
+          Uncategorised still counts as money out; it just tells you nothing about where it went.
+        </p>
+        <p className="muted">
+          A merchant rule is one line: if the description contains this text, categorise it as that. The match ignores
+          upper and lower case and looks anywhere in the description, so a rule on WOOLWORTHS also catches
+          “WOOLWORTHS SANDTON 4471”. On the review screen each row says how the app arrived at its category —
+          “rule matched” means one of your rules matched the description, “guessed” means no rule matched but a
+          category name appears in the description, “not recognised” means nothing matched and it was left
+          uncategorised, and “you chose it” means you picked it by hand on that screen.
+        </p>
+        <p className="muted">
+          The <b>+rule</b> button, which appears beside every staged row a rule did not already match, is where the
+          work pays off. It builds a rule from the first two words of that description and applies it to every other
+          staged row containing them, there and then. Teach it during this month's import and next month's arrives
+          already matched — the same shop, the same reference, no second round of clicking.
+        </p>
+        <p className="muted-s">
+          Rules live under Merchant rules on the Imports page and can be edited or deleted at any time. Changing a rule
+          does not go back and re-categorise transactions you have already committed — for those, change the category
+          on the Transactions page.
+        </p>
+      </Card>
+
+      <Card className="span3" title="Recurring cashflow and annual expenses">
+        <p className="muted">
+          Recurring Cashflow is your normal month: salary in, the bond, groceries, the subscriptions — each with an
+          amount and the day you expect it. Every one of them counts in every month the app projects, unless it is a
+          transfer between your own accounts.
+        </p>
+        <p className="muted">
+          Annual Expenses is for the bills that come round once a year: insurance, licensing, school fees. Each one
+          carries the month it falls due and a yearly increase, and it only lands in that month. In the twelve-month
+          forecast the increase is applied once the forecast crosses into the next calendar year; in the long-term
+          plan, annual bills rise with inflation along with the rest of your spending.
+        </p>
+        <p className="muted">
+          Both exist because folding the second into the first hides the problem. A year of irregular bills averaged
+          across twelve months is a figure you never feel; arriving in one month, it is what empties the account. That
+          is why the Annual page prints a monthly equivalent — the year's total divided by twelve — at the top. It is
+          not what you will pay that month, it is what to put aside.
+        </p>
+        <div className="callout">
+          Anything categorised as a transfer — a credit-card payment, a contribution into your own investment account —
+          sits in the table but is left out of income, spend and every projection. Moving your own money between your
+          own accounts is not spending, and counting it would count the same money twice.
+        </div>
+      </Card>
+
+      <Card className="span3" title="What the warning triangle means">
+        <p className="muted">
+          On Recurring Cashflow the app matches each planned item against your real transactions: same category, same
+          month, not excluded. If it finds any, the row stops showing “pending” and shows what actually went through,
+          along with the variance — the gap between that and what you planned.
+        </p>
+        <p className="muted">
+          The ⚠ appears once that gap is more than 10% of the planned amount, or {C0(10000, cur)} — whichever is the
+          larger. The larger of the two is what decides: on a small item the floor is doing the work, on a large one
+          the percentage is.
+        </p>
+        <p className="muted">
+          The Forecast table has a related column, “vs plan”, on a different rule: it turns amber once the month's net
+          is more than 10% away from the planned net, with no floor underneath it. It is only ever filled in for a
+          month that has actual transactions in it — a month that has not started yet is entirely plan, so there is
+          nothing for it to be off by.
+        </p>
+        <p className="muted-s">
+          A flag is not an error. It says this month did not go the way you wrote it down, and whether the plan or the
+          spending was the wrong one is your call.
+        </p>
+      </Card>
+
+      <Card className="span3" title="Forecast and the Long-Term Plan">
+        <p className="muted">
+          Forecast covers twelve months starting with this one. Each month adds up your recurring items, any annual
+          item falling due in it, and the bonus if it lands there, and keeps a running total across the year.
+        </p>
+        <p className="muted">
+          The current month is treated differently from the rest, and the table says which is which. It is labelled
+          “actual + planned”: an item the app has matched counts at what actually happened, one it has not yet matched
+          counts at its planned amount, and anything you spent outside the plan is added on top. Every later month is
+          labelled “planned”, because nothing has happened in it yet.
+        </p>
+        <p className="muted">
+          The Long-Term Plan is one row a year, from your current age to your planning age. Salary stops at your
+          retirement age. Spending is your recurring items twelve times over, plus your annual ones, plus whatever the
+          mortgage costs that year, and it grows by inflation every year. Balances grow at the return rates in
+          Settings, and each year's surplus or shortfall lands in cash — when cash runs negative it draws down
+          investments first, then crypto.
+        </p>
+        <p className="muted">
+          “Depletion” is the first year, at or after your retirement age, in which cash, investments and crypto
+          together reach zero. Your property is not in that test, because you would have to sell it to spend it, and
+          the working years before retirement are not tested at all — so “none projected” does not mean you cannot run
+          short before you get there.
+        </p>
+        <p className="muted-s">
+          Everything driving both pages sits on Settings and Compensation: the three ages, inflation, the return rates,
+          salary, bonus, salary growth and the mortgage. Change any one of them and both pages redraw straight away.
+        </p>
+      </Card>
+
+      <Card className="span3" title="Scenario overlays">
+        <p className="muted">
+          A scenario is a what-if drawn next to your figures rather than over them. Switch one on at the top of
+          Forecast or Long-Term Plan and a second, dashed line appears alongside the base case; the pill in the top bar
+          reads SCENARIO ON for as long as it is running. There is one scenario, shared by both pages.
+        </p>
+        <p className="muted">
+          Two of the five fields change amounts: salary and bonus by a percentage, and spending by a percentage. The
+          other three — inflation, the mortgage rate, and the investment and crypto returns together — are
+          <b> added to</b> the rates already in your model, not used in place of them. Each of the three prints the
+          figure it is adding to underneath itself, so you can see what it will come to.
+        </p>
+        <p className="muted-s">
+          Nothing you type into the panel is written back over your own figures. The overlay is its own five
+          percentages, and the base case is drawn from your model untouched; switch the scenario off and everything is
+          exactly where you left it.
+        </p>
+      </Card>
+
+      <Card className="span3" title="What is saved, and what is not">
+        <p className="muted">
+          Signed in, every change is saved to your account on its own — you are never asked to save the model, and
+          there is nothing to press. Saving waits until you have stopped for about a second, so a run of edits goes up
+          as one save rather than twenty, and the bar at the top of the window reads “Saving…” and then “All changes
+          saved”. If a save fails it says so and tries again on your next change.
+        </p>
+        <p className="muted">
+          In demo mode nothing is saved at all. The bar across the top says so outright. Close the tab and every figure
+          you have typed is gone — it is a genuine sandbox, and nothing done in it can reach a real account.
+        </p>
+        <p className="muted">
+          Export, under Settings, writes what is in the model out as CSV: your transactions, the twelve-month forecast
+          and the long-term plan, three files. It is the only way to take a copy out of Ledgerline, and in demo mode it
+          is the only way to keep anything at all.
+        </p>
+        <p className="muted-s">
+          Imports, rule changes, recategorisations, exclusions and amount edits are written to the audit trail at the
+          foot of Settings — one line each, with the time. A handful of incidental edits are not, such as renaming an
+          item as you type it.
+        </p>
+      </Card>
+
+      <Card className="span3" title="Starting over with your own figures">
+        <p className="muted">
+          Reset, at the foot of Settings, empties the model so you can enter your own figures on a clean sheet. It
+          removes every transaction, every recurring and annual item, every merchant rule, the record of every import,
+          and every investment and crypto balance you have entered. Salary, bonus, mortgage, property value, inflation
+          and all three return rates go to zero, and any scenario is switched off.
+        </p>
+        <p className="muted">
+          What it keeps is the part that surprises people: <b>your accounts and the whole category list stay</b>.
+          Nothing anywhere in this app creates an account or a category — both exist only as the rows the model starts
+          with — so clearing them would leave you with nowhere to record a transaction and an empty dropdown on every
+          page. The accounts stay under their own names with every balance at zero.
+        </p>
+        <p className="muted">
+          A few settings go back to their defaults rather than dropping to zero, because zero is not a value the rest
+          of the app can read: the current, retirement and planning ages, the month the bonus is paid in, and the month
+          the fixed rate expires. With every amount at zero none of them changes a single figure, but if the ages
+          mattered to you, set them again afterwards. You stay signed in, and the theme you are reading this in does
+          not change.
+        </p>
+        <div className="callout">
+          Reset cannot be undone — there is no undo in this app — and when you are signed in the empty model is saved
+          over what was there within a second or two. Export first if you want a copy. The button asks once: press
+          Reset the model, then Yes, clear everything.
+        </div>
+        <p className="muted-s">
+          The audit trail is cleared with everything else, down to the single line recording that the reset happened.
+        </p>
       </Card>
     </div>
   );
