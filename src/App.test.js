@@ -474,7 +474,7 @@ describe("accountBalance", () => {
     expect(accountBalance(bank, txns, snaps, "2026-02-01")).toBe(90000);
   });
 
-  it("takes the latest snapshot for investment accounts, ignoring transactions", () => {
+  it("takes the latest snapshot for investment accounts", () => {
     const inv = { id: "inv", type: "investment", openingC: 5 };
     expect(accountBalance(inv, txns, snaps)).toBe(300000);
   });
@@ -490,6 +490,146 @@ describe("accountBalance", () => {
     expect(accountBalance(inv, txns, snaps, "2026-01-01")).toBe(5);
     const crypto = { id: "nosnaps", type: "crypto", openingC: 4242 };
     expect(accountBalance(crypto, txns, snaps)).toBe(4242);
+  });
+
+  /* ---- contributions on top of the mark to market ---- */
+
+  /* A transfer to the portfolio has two legs. The bank leg is read, so the
+     money leaves; the portfolio leg was not, so it arrived nowhere and every
+     month the user saved took their net worth down by what they saved. */
+  it("counts money paid into an investment account after its last snapshot", () => {
+    const bank = { id: "b", type: "bank", openingC: 1000000 };
+    const inv = { id: "i", type: "investment", openingC: 0 };
+    const s = [{ accountId: "i", date: "2026-02-28", balanceC: 5000000 }];
+    const t = [
+      { accountId: "b", date: "2026-03-06", amountC: -500000, transfer: true },
+      { accountId: "i", date: "2026-03-06", amountC: 500000, transfer: true },
+    ];
+    expect(accountBalance(bank, t, s)).toBe(500000);
+    expect(accountBalance(inv, t, s)).toBe(5500000);
+    // a transfer moves money between two accounts; it does not destroy any
+    expect(accountBalance(bank, t, s) + accountBalance(inv, t, s)).toBe(6000000);
+  });
+
+  /* The snapshot is the market value on its date, so it already contains
+     everything paid in before it — counting those again would credit the
+     contribution twice. */
+  it("adds the transactions after the snapshot and not the ones before it", () => {
+    const inv = { id: "i", type: "investment", openingC: 111 };
+    const s = [{ accountId: "i", date: "2026-02-28", balanceC: 5000000 }];
+    const t = [
+      { accountId: "i", date: "2026-01-10", amountC: 900000 },
+      { accountId: "i", date: "2026-02-01", amountC: 400000 },
+      { accountId: "i", date: "2026-03-10", amountC: 100000 },
+      { accountId: "i", date: "2026-03-11", amountC: -30000 },
+    ];
+    expect(accountBalance(inv, t, s)).toBe(5070000);
+  });
+
+  it("treats a contribution dated on the snapshot day as already inside it", () => {
+    const inv = { id: "i", type: "investment", openingC: 0 };
+    const s = [{ accountId: "i", date: "2026-02-28", balanceC: 5000000 }];
+    const t = [{ accountId: "i", date: "2026-02-28", amountC: 700000 }];
+    expect(accountBalance(inv, t, s)).toBe(5000000);
+  });
+
+  /* No snapshot means nothing has been marked to market, so there is nothing
+     for the transactions to sit on top of and the account is read like a bank
+     account. */
+  it("opens plus every transaction when the account has no snapshot at all", () => {
+    const inv = { id: "i", type: "investment", openingC: 300000 };
+    const t = [
+      { accountId: "i", date: "2026-01-10", amountC: 100000 },
+      { accountId: "i", date: "2026-03-10", amountC: 250000 },
+    ];
+    expect(accountBalance(inv, t, [])).toBe(650000);
+  });
+
+  it("ignores an excluded transaction dated after the snapshot", () => {
+    const inv = { id: "i", type: "investment", openingC: 0 };
+    const s = [{ accountId: "i", date: "2026-02-28", balanceC: 5000000 }];
+    const t = [
+      { accountId: "i", date: "2026-03-10", amountC: 100000, excluded: true },
+      { accountId: "i", date: "2026-03-11", amountC: 40000 },
+    ];
+    expect(accountBalance(inv, t, s)).toBe(5040000);
+  });
+
+  it("reads only this account's transactions", () => {
+    const inv = { id: "i", type: "investment", openingC: 0 };
+    const s = [{ accountId: "i", date: "2026-02-28", balanceC: 5000000 }];
+    const t = [{ accountId: "other", date: "2026-03-10", amountC: 100000 }];
+    expect(accountBalance(inv, t, s)).toBe(5000000);
+  });
+
+  /* Asked for an earlier date, the whole rule moves back with it: the snapshot
+     that was latest then, and only the contributions between that snapshot and
+     the cutoff. This is what draws the nine-month chart on the Accounts page. */
+  it("applies the rule as at uptoDate, from the snapshot that was latest then", () => {
+    const inv = { id: "i", type: "investment", openingC: 111 };
+    const s = [
+      { accountId: "i", date: "2026-01-31", balanceC: 1000000 },
+      { accountId: "i", date: "2026-02-28", balanceC: 5000000 },
+    ];
+    const t = [
+      { accountId: "i", date: "2026-02-10", amountC: 200000 },
+      { accountId: "i", date: "2026-03-10", amountC: 700000 },
+    ];
+    expect(accountBalance(inv, t, s, "2026-02-15")).toBe(1200000); // Jan snapshot + the Feb 10 payment
+    expect(accountBalance(inv, t, s, "2026-02-28")).toBe(5000000); // Feb snapshot, which already holds it
+    expect(accountBalance(inv, t, s, "2026-03-31")).toBe(5700000);
+  });
+
+  /* The Accounts page snapshot control: contribute, then type in what the
+     broker actually says. The new figure supersedes the contributions rather
+     than being added to them. */
+  it("does not double count contributions when a fresh snapshot is entered over them", () => {
+    const inv = { id: "i", type: "investment", openingC: 0 };
+    const before = [{ accountId: "i", date: "2026-02-28", balanceC: 5000000 }];
+    const t = [{ accountId: "i", date: "2026-03-06", amountC: 500000 }];
+    expect(accountBalance(inv, t, before)).toBe(5500000);
+    const after = [...before, { accountId: "i", date: "2026-03-31", balanceC: 5620000 }];
+    expect(accountBalance(inv, t, after)).toBe(5620000); // the market's figure, not 6120000
+  });
+
+  it("uses the same rule for crypto wallets", () => {
+    const w = { id: "w", type: "crypto", openingC: 0 };
+    const s = [{ accountId: "w", date: "2026-02-28", balanceC: 800000 }];
+    const t = [{ accountId: "w", date: "2026-03-06", amountC: 120000 }];
+    expect(accountBalance(w, t, s)).toBe(920000);
+  });
+});
+
+/* accountBalance is both the Overview's net-worth stat and the first row of
+   the Long-Term Plan, which 212cb09 made the balances held today. The two are
+   computed by different code and are only equal for as long as they read the
+   accounts the same way, so pin the agreement rather than either figure. */
+describe("the Overview net worth and the long-term plan's first row", () => {
+  const overviewNetWorth = (s) => {
+    let assets = 0, liab = 0;
+    s.accounts.forEach((a) => { const b = accountBalance(a, s.txns, s.snapshots); if (b >= 0) assets += b; else liab += b; });
+    assets += s.mortgage.propertyValueC || 0;
+    liab += -s.mortgage.balanceC;
+    return assets + liab;
+  };
+
+  it("agree on the seeded model", () => {
+    expect(buildLongTerm(initialState, null).rows[0].netWorthC).toBe(overviewNetWorth(initialState));
+  });
+
+  it("agree on the reset model, at zero", () => {
+    expect(buildLongTerm(blankState, null).rows[0].netWorthC).toBe(overviewNetWorth(blankState));
+    expect(overviewNetWorth(blankState)).toBe(0);
+  });
+
+  it("still agree once a contribution lands in the portfolio after its last snapshot", () => {
+    const s = structuredClone(initialState);
+    const inv = s.accounts.find((a) => a.type === "investment");
+    const last = s.snapshots.filter((x) => x.accountId === inv.id).sort((a, b) => a.date.localeCompare(b.date)).pop();
+    const after = `${last.date.slice(0, 8)}28`;
+    s.txns = [...s.txns, { id: "t_contrib", accountId: inv.id, date: after, amountC: 500000, transfer: true }];
+    expect(accountBalance(inv, s.txns, s.snapshots)).toBe(last.balanceC + 500000);
+    expect(buildLongTerm(s, null).rows[0].netWorthC).toBe(overviewNetWorth(s));
   });
 });
 

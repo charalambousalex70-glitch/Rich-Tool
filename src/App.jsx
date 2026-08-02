@@ -465,14 +465,41 @@ export const isFlow = (t, cats) => {
   return !c || c.kind !== "transfer";
 };
 
+/* An investment or crypto account is worth its latest snapshot on or before
+   the date, plus anything paid into it since. Both halves are needed and
+   neither alone will do.
+
+   Summing the transactions on their own — the way a bank account is read —
+   would throw away every gain and loss the user ever recorded, because a
+   portfolio moves with the market and not only with what is paid in. That is
+   what the snapshots are for: one is a mark to market that supersedes
+   everything before it, opening balance and contributions alike.
+
+   Reading the snapshot on its own was the other half of the mistake, and it
+   lost money outright. A transfer to the portfolio has two legs; the bank leg
+   is read, so the money left, and the portfolio leg was not, so it arrived
+   nowhere. The seeded model does exactly this every month, and net worth fell
+   by the amount saved each time. Contributions dated after the last snapshot
+   have not been marked to market yet, so they sit on top of it.
+
+   On the snapshot's own date counts as inside it: the snapshot is the balance
+   the broker reports for that day, so the day's payments are already in the
+   figure and adding them would count them twice. That is also what makes the
+   Accounts page's snapshot control behave — typing in today's real balance
+   after a month of contributions replaces them rather than stacking on them.
+
+   With no snapshot at all nothing has been marked to market, so there is
+   nothing for the contributions to sit on and the account is read exactly like
+   any other: opening balance plus every transaction. */
 export const accountBalance = (acc, txns, snapshots, uptoDate) => {
+  let openC = acc.openingC;
+  let sinceDate = null; // date of the mark to market the transactions build on, if any
   if (acc.type === "investment" || acc.type === "crypto") {
     const snaps = snapshots.filter((s) => s.accountId === acc.id && (!uptoDate || s.date <= uptoDate)).sort((a, b) => a.date.localeCompare(b.date));
-    if (snaps.length) return snaps[snaps.length - 1].balanceC;
-    return acc.openingC;
+    if (snaps.length) { openC = snaps[snaps.length - 1].balanceC; sinceDate = snaps[snaps.length - 1].date; }
   }
-  const sum = txns.filter((t) => t.accountId === acc.id && !t.excluded && (!uptoDate || t.date <= uptoDate)).reduce((s, t) => s + t.amountC, 0);
-  return acc.openingC + sum;
+  const sum = txns.filter((t) => t.accountId === acc.id && !t.excluded && (!uptoDate || t.date <= uptoDate) && (sinceDate === null || t.date > sinceDate)).reduce((s, t) => s + t.amountC, 0);
+  return openC + sum;
 };
 
 export const monthlyPayment = (balanceC, ratePct, termMonths) => {
@@ -1474,7 +1501,7 @@ function Accounts({ state, update, cur, goTxns, palette }) {
                 {isSnap ? (
                   <div className="recon">
                     <div className="muted-s">Enter the balance yourself</div>
-                    <div className="muted-s">This account's balance is whatever you last typed in here — it does not move on its own between updates.</div>
+                    <div className="muted-s">This account's balance is the last figure you typed in here, plus anything paid into the account since that date. It does not grow on its own between updates.</div>
                     <div className="recon-row">
                       <input type="date" aria-label={`Date of the balance you are entering for ${acc.name}`} value={(snap[acc.id] || {}).date || todayISO()} onChange={(e) => setSnap({ ...snap, [acc.id]: { ...(snap[acc.id] || {}), date: e.target.value } })} />
                       <input aria-label={`Balance of ${acc.name} on that date`} placeholder="Balance" value={(snap[acc.id] || {}).balance || ""} onChange={(e) => setSnap({ ...snap, [acc.id]: { ...(snap[acc.id] || {}), balance: e.target.value } })} />
