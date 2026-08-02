@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import {
+import React from "react";
+import { renderToString } from "react-dom/server";
+import App, {
   toC, C, C0, C0Short, parseDateAny,
   isFlow, accountBalance,
   monthlyPayment, amortise,
@@ -1445,5 +1447,198 @@ describe("hydrate", () => {
     const after = st.recurring.filter((x) => x.id !== doomed.id);
     expect(after).toHaveLength(1);
     expect(after[0].id).toBe(st.recurring[0].id);
+  });
+});
+
+/* ============================================================
+   A LEGACY SAVED MODEL — through App's own boot path
+   ============================================================
+
+   hydrate is only ever called from one place, the useState that seeds App,
+   and until now nothing had put a saved model through it. A browser cannot:
+   demo mode renders <App /> with no boot at all, and the branch that passes
+   one is behind a Supabase session, so with no env vars there is no way to
+   reach hydrate from the page. react-dom/server is the nearest thing there
+   is — it runs the same `useState(() => boot ? hydrate(boot) : initialState)`
+   and the same first render of the whole Overview page, which is exactly
+   where the lockout used to happen. Effects do not run, so this proves the
+   render and not what follows it. */
+describe("a saved model an older client wrote", () => {
+  freezeNow();
+
+  const renderApp = (boot) => renderToString(React.createElement(App, { boot }));
+
+  const TWIN_REC = "Gardening, entered a second time";
+  const TWIN_TXN = "BOND REPAYMENT HOMELOAN (duplicate)";
+
+  /* Everything an old blob is actually wrong about, in one model: no schema
+     stamp, a whole top-level key it predates, a sub-key of mortgage it
+     predates, a sub-key of settings it predates, a key a later client added
+     that this one has never heard of, and two pairs of rows each carrying one
+     id because the counter handed the same number out twice. */
+  const legacyModel = () => {
+    const b = structuredClone(initialState);
+    delete b.schemaVersion;
+    delete b.scenario;
+    delete b.mortgage.propertyValueC;
+    delete b.settings.theme;
+    b.settings.currency = "£";
+    b.recurring = [...b.recurring, { ...b.recurring[2], name: TWIN_REC }];
+    b.txns = [...b.txns, { ...b.txns[0], desc: TWIN_TXN }];
+    b.nickname = "Alex";
+    return b;
+  };
+
+  it("draws the whole page from that blob, carrying the figures it saved", () => {
+    const html = renderApp(legacyModel());
+    expect(html).toContain("Overview");
+    expect(html).toContain("Net worth");
+    expect(html).toContain("£"); // the saved currency, not the seeded one
+    expect(html.length).toBeGreaterThan(10000);
+  });
+
+  /* The lockout, key by key. Every one of these is read before the first
+     paint, and eleven of the fourteen throw on the way in without hydrate —
+     behind an ErrorBoundary offering only to load the same blob again. */
+  it("draws the page whichever single top-level key the blob has not got", () => {
+    Object.keys(initialState).forEach((key) => {
+      const b = structuredClone(initialState);
+      delete b[key];
+      expect(() => renderApp(b), `missing ${key}`).not.toThrow();
+    });
+  });
+
+  it("draws the page where a top-level key came back null rather than absent", () => {
+    Object.keys(initialState).forEach((key) => {
+      const b = structuredClone(initialState);
+      b[key] = null;
+      expect(() => renderApp(b), `null ${key}`).not.toThrow();
+    });
+  });
+
+  it("draws the page from a blob that is not a saved model at all", () => {
+    [{}, [], "nonsense", 42, null].forEach((b) => {
+      expect(() => renderApp(b), String(b)).not.toThrow();
+    });
+  });
+
+  /* The original bug, in every table the counter could have collided in.
+     Deleting one row is filter((x) => x.id !== id) everywhere in the app, so
+     the damage is measured the way the app does it: ask for one row and count
+     what is left. On the blob as saved, asking for one loses two. */
+  it("leaves a delete by id taking exactly one row, in every table that mints ids", () => {
+    ["recurring", "annual", "rules", "txns", "snapshots", "batches", "audit"].forEach((key) => {
+      const rows = initialState[key];
+      const twin = { ...rows[0], twinMarker: true };
+      const b = { ...structuredClone(initialState), [key]: [...structuredClone(rows), twin] };
+
+      // as saved: one delete takes the twin and the row it collided with
+      expect(b[key].filter((x) => x.id !== twin.id), key).toHaveLength(rows.length - 1);
+
+      const st = hydrate(b);
+      const doomed = st[key][st[key].length - 1];
+      expect(doomed.twinMarker, key).toBe(true);
+      const after = st[key].filter((x) => x.id !== doomed.id);
+      expect(after, key).toHaveLength(rows.length);
+      expect(after.map((r) => r.id), key).toEqual(rows.map((r) => r.id));
+
+      // and the edit half of it: one row changes, not both
+      const edited = st[key].map((x) => (x.id === doomed.id ? { ...x, edited: true } : x));
+      expect(edited.filter((x) => x.edited), key).toHaveLength(1);
+    });
+  });
+
+  /* Forward compatibility is the reason this is a merge and not a rebuild.
+     An older tab that loaded a newer tab's model writes the whole thing back,
+     so anything it drops is gone — including a key inside one of the four
+     settings objects, and including a key on the one row hydrate rewrites. */
+  it("brings a newer client's keys back out at every level a merge could have dropped them", () => {
+    const b = legacyModel();
+    b.goals = [{ id: "g1", name: "New roof" }];
+    b.settings.accentColour = "teal";
+    b.comp.thirteenthCheque = true;
+    b.mortgage.offsetAccountId = "acc_savings";
+    b.scenario = { jobLossMonths: 6 };
+    b.txns[0].receiptUrl = "https://example.test/r/1";
+    b.recurring[b.recurring.length - 1].reminderDays = 3; // on the row that gets reminted
+
+    const st = hydrate(b);
+    expect(st.goals).toEqual([{ id: "g1", name: "New roof" }]);
+    expect(st.nickname).toBe("Alex");
+    expect(st.settings.accentColour).toBe("teal");
+    expect(st.comp.thirteenthCheque).toBe(true);
+    expect(st.mortgage.offsetAccountId).toBe("acc_savings");
+    expect(st.scenario.jobLossMonths).toBe(6);
+    expect(st.scenario.enabled).toBe(false); // and the known keys still filled
+    expect(st.txns[0].receiptUrl).toBe("https://example.test/r/1");
+
+    const reminted = st.recurring[st.recurring.length - 1];
+    expect(reminted.name).toBe(TWIN_REC);
+    expect(reminted.id).not.toBe(initialState.recurring[2].id);
+    expect(reminted.reminderDays).toBe(3);
+  });
+
+  /* Accounts and categories are what everything else names. Reminting one
+     would cut every row that points at it adrift, so they are left alone even
+     where they collide — and after all the reminting above, every reference in
+     the model still has to land on a row that exists. */
+  it("leaves account and category ids alone, with nothing left pointing at a row that is not there", () => {
+    const b = legacyModel();
+    b.batches = [...b.batches, { ...b.batches[0], filename: "second import" }];
+    b.snapshots = [...b.snapshots, { ...b.snapshots[0] }];
+    b.rules = [...b.rules, { ...b.rules[0] }];
+    b.annual = [...b.annual, { ...b.annual[0] }];
+    b.accounts = [...b.accounts, { ...b.accounts[0] }];       // even a collision here
+    b.categories = [...b.categories, { ...b.categories[0] }];
+    const accountIdsAsSaved = b.accounts.map((a) => a.id);
+    const categoryIdsAsSaved = b.categories.map((c) => c.id);
+
+    const st = hydrate(b);
+    expect(st.accounts.map((a) => a.id)).toEqual(accountIdsAsSaved);
+    expect(st.categories.map((c) => c.id)).toEqual(categoryIdsAsSaved);
+
+    const accIds = new Set(st.accounts.map((a) => a.id));
+    const catIds = new Set(st.categories.map((c) => c.id));
+    const batchIds = new Set(st.batches.map((x) => x.id));
+    st.txns.forEach((t) => {
+      expect(accIds.has(t.accountId), `txn ${t.desc} account`).toBe(true);
+      expect(catIds.has(t.categoryId), `txn ${t.desc} category`).toBe(true);
+      if (t.batchId) expect(batchIds.has(t.batchId), `txn ${t.desc} batch`).toBe(true);
+    });
+    st.snapshots.forEach((s) => expect(accIds.has(s.accountId), `snapshot ${s.id}`).toBe(true));
+    [...st.recurring, ...st.annual, ...st.rules].forEach((r) =>
+      expect(catIds.has(r.categoryId), `${r.name || r.pattern} category`).toBe(true));
+    st.batches.forEach((x) => x.accountIds.forEach((id) =>
+      expect(accIds.has(id), `batch ${x.filename} account`).toBe(true)));
+    expect(new Set(st.batches.map((x) => x.id)).size).toBe(st.batches.length);
+  });
+
+  /* Safari before 15.4 has no randomUUID, and neither has any browser served
+     over plain http, so the fallback is not a corner case. Count the calls:
+     an id that is merely well-formed proves nothing about which branch ran. */
+  it("mints ids through the fallback where randomUUID is missing, and repairs a model with it", () => {
+    const UUID_ID = /^[a-z]+_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    const real = globalThis.crypto;
+    let calls = 0;
+    vi.stubGlobal("crypto", { getRandomValues: (a) => { calls += 1; return real.getRandomValues(a); } });
+    try {
+      expect(globalThis.crypto.randomUUID).toBeUndefined();
+
+      const ids = new Set();
+      for (let i = 0; i < 5000; i++) ids.add(uid("txn"));
+      expect(calls).toBe(5000); // every one of them came out of getRandomValues
+      expect(ids.size).toBe(5000);
+      ids.forEach((id) => expect(id).toMatch(UUID_ID));
+
+      // and the repair itself works on that branch, which is what matters
+      const b = legacyModel();
+      const st = hydrate(b);
+      const reminted = st.recurring[st.recurring.length - 1];
+      expect(reminted.id).toMatch(UUID_ID);
+      expect(new Set(st.recurring.map((r) => r.id)).size).toBe(st.recurring.length);
+      expect(new Set(st.txns.map((t) => t.id)).size).toBe(st.txns.length);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
