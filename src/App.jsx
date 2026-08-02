@@ -650,12 +650,23 @@ export const buildLongTerm = (state, scenario) => {
      and this page is only about the second. */
   let hadLiquid = cash + invest + crypto > 0;
   const y0 = +nowYm().slice(0, 4);
+  /* A row is a position, not a period: its balances are what is held at that
+     age and its income and spend are the year that follows, which is why the
+     net on one row is the difference between its cash and the next row's. So
+     the first row is today — the balances the projection starts from, with no
+     year of growth, spending or mortgage payments applied — and the last is
+     the planning age itself. The row was pushed at the foot of this loop
+     before, which put a year of compounding into the row labelled "now" and
+     another beyond the planning age at the far end: a 48-year plan drawn as
+     49 years of growth, and a chart captioned as starting from today's
+     balances that in fact opened a year out. */
   for (let i = 0; i <= years; i++) {
     const age = st.currentAge + i;
     const retired = age >= st.retirementAge;
     const income = retired ? 0 : Math.round(salaryAnnual * (1 + bonusPct));
-    // mortgage amortisation (annual, approximate monthly compounding)
+    // mortgage amortisation over the year ahead (annual, approximate monthly compounding)
     let mortPaid = 0;
+    let mortNext = mortBal;
     if (mortBal > 0) {
       let b = mortBal;
       for (let m = 0; m < 12 && b > 0; m++) {
@@ -664,11 +675,21 @@ export const buildLongTerm = (state, scenario) => {
         b = Math.max(0, b + int_ - pay);
         mortPaid += pay;
       }
-      mortBal = b;
+      mortNext = b;
     }
     const spend = recurringSpendAnnual + annualSpend + mortPaid;
     const net = income - spend;
-    // apply growth to balances, then absorb surplus/shortfall
+    const liquid = cash + invest + crypto;
+    const assets = liquid + propVal;
+    const netWorth = assets - mortBal;
+    if (depletionAge === null && retired && hadLiquid && liquid <= 0) depletionAge = age;
+    if (liquid > 0) hadLiquid = true;
+    rows.push({ year: y0 + i, age, retired, incomeC: income, spendC: spend, netC: net,
+      cashC: cash, investC: invest, cryptoC: crypto, propertyC: propVal, mortC: mortBal, assetsC: assets, liquidC: liquid, netWorthC: netWorth });
+    if (i === years) break; // the planning age is the end of the plan, not another year of it
+    // roll on a year: the mortgage payments just made, growth on the balances,
+    // then the surplus or shortfall, then next year's figures
+    mortBal = mortNext;
     cash = Math.round(cash * (1 + cashRet)) + net;
     invest = Math.round(invest * (1 + ret));
     crypto = Math.round(crypto * (1 + cryptoRet));
@@ -678,14 +699,6 @@ export const buildLongTerm = (state, scenario) => {
       invest -= fromInvest; cash += fromInvest;
       if (cash < 0) { const fromCrypto = Math.min(crypto, -cash); crypto -= fromCrypto; cash += fromCrypto; }
     }
-    const liquid = cash + invest + crypto;
-    const assets = liquid + propVal;
-    const netWorth = assets - mortBal;
-    if (depletionAge === null && retired && hadLiquid && liquid <= 0) depletionAge = age;
-    if (liquid > 0) hadLiquid = true;
-    rows.push({ year: y0 + i, age, retired, incomeC: income, spendC: spend, netC: net,
-      cashC: cash, investC: invest, cryptoC: crypto, propertyC: propVal, mortC: mortBal, assetsC: assets, liquidC: liquid, netWorthC: netWorth });
-    // escalate for next year
     if (!retired) salaryAnnual = Math.round(salaryAnnual * (1 + comp.salaryGrowthPct / 100));
     recurringSpendAnnual = Math.round(recurringSpendAnnual * (1 + infl));
     annualSpend = Math.round(annualSpend * (1 + infl));
@@ -2405,11 +2418,13 @@ function Governance({ cur }) {
           labelled “planned”, because nothing has happened in it yet.
         </p>
         <p className="muted">
-          The Long-Term Plan is one row a year, from your current age to your planning age. Salary stops at your
-          retirement age. Spending is your recurring items twelve times over, plus your annual ones, plus whatever the
-          mortgage costs that year, and it grows by inflation every year. Balances grow at the return rates in
-          Settings, and each year's surplus or shortfall lands in cash — when cash runs negative it draws down
-          investments first, then crypto.
+          The Long-Term Plan is one row a year, from your current age to your planning age. The first row is where you
+          stand today — the balances you actually hold, with nothing projected onto them yet — and the income and spend
+          beside them are the year that follows, which is why a row's net is the difference between its cash and the
+          next row's. Salary stops at your retirement age. Spending is your recurring items twelve times over, plus
+          your annual ones, plus whatever the mortgage costs that year, and it grows by inflation every year. Balances
+          grow at the return rates in Settings, and each year's surplus or shortfall lands in cash — when cash runs
+          negative it draws down investments first, then crypto.
         </p>
         <p className="muted">
           “Depletion” is the first year, at or after your retirement age, in which cash, investments and crypto

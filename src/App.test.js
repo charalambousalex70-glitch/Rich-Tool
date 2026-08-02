@@ -972,10 +972,60 @@ describe("buildLongTerm", () => {
 
   it("rolls the cash balance forward by the net each year", () => {
     const { rows } = buildLongTerm(baseState(), null);
-    expect(rows[0].cashC).toBe(15800000); // 5000000 opening + 10800000
+    expect(rows[0].cashC).toBe(5000000); // the opening balance, untouched
+    // a row's net is the year that follows it, so it lands on the row below
     rows.forEach((r, i) => {
-      if (i > 0) expect(r.cashC).toBe(rows[i - 1].cashC + r.netC);
+      if (i > 0) expect(r.cashC).toBe(rows[i - 1].cashC + rows[i - 1].netC);
     });
+  });
+
+  /* The first row is where the plan starts from, not a year into it. The chart
+     above it is captioned "starts from your balances today", and it has to be
+     the figures the rest of the app shows for today: no growth, no year of
+     spending, no mortgage payments, no property revaluation. */
+  it("opens on the balances held today, before any growth or spending", () => {
+    const s = baseState();
+    s.settings = { ...s.settings, inflationPct: 10, investReturnPct: 10, cashReturnPct: 10, cryptoReturnPct: 10 };
+    s.mortgage = { balanceC: 10000000, ratePct: 12, termMonths: 240, paymentOverrideC: 200000, propertyValueC: 40000000 };
+    s.accounts = [
+      { id: "a1", type: "bank", openingC: 5000000 },
+      { id: "a2", type: "investment", openingC: 8000000 },
+      { id: "a3", type: "crypto", openingC: 300000 },
+    ];
+    const { rows } = buildLongTerm(s, null);
+    expect(rows[0].age).toBe(60);
+    expect(rows[0].year).toBe(2026);
+    expect(rows[0].cashC).toBe(5000000);
+    expect(rows[0].investC).toBe(8000000);
+    expect(rows[0].cryptoC).toBe(300000);
+    expect(rows[0].propertyC).toBe(40000000);
+    expect(rows[0].mortC).toBe(10000000);
+    expect(rows[0].liquidC).toBe(13300000);
+    expect(rows[0].netWorthC).toBe(43300000); // 13300000 liquid + 40000000 property - 10000000 owed
+  });
+
+  /* One year of compounding per year of the horizon. Sixty to sixty-two is two
+     years, so the last row carries two, not three. */
+  it("compounds once per year of the horizon and stops at the planning age", () => {
+    const s = baseState();
+    s.settings = { ...s.settings, retirementAge: 60, planningAge: 62, investReturnPct: 10 };
+    s.comp = { ...s.comp, salaryMonthlyC: 0 };
+    s.recurring = [];
+    s.accounts = [{ id: "a1", type: "investment", openingC: 1000000 }];
+    const { rows } = buildLongTerm(s, null);
+    expect(rows.map((r) => r.age)).toEqual([60, 61, 62]);
+    expect(rows.map((r) => r.investC)).toEqual([1000000, 1100000, 1210000]); // x1.1^0, ^1, ^2
+  });
+
+  /* Twelve months of amortisation per year of the horizon, no more: the
+     balance on a row is what is owed at that age. R250 a month against an
+     interest-free R12,000 clears it in the fourth year, not the third. */
+  it("amortises the mortgage twelve months for each year of the horizon", () => {
+    const s = baseState();
+    s.mortgage = { balanceC: 1200000, ratePct: 0, termMonths: 48, paymentOverrideC: 25000, propertyValueC: 0 };
+    const { rows } = buildLongTerm(s, null);
+    expect(rows.map((r) => r.mortC)).toEqual([1200000, 900000, 600000, 300000, 0]);
+    expect(rows.map((r) => r.spendC)).toEqual([1500000, 1500000, 1500000, 1500000, 1200000]);
   });
 
   it("reports no depletion while liquid assets remain positive", () => {
@@ -987,8 +1037,27 @@ describe("buildLongTerm", () => {
     s.accounts = [{ id: "a1", type: "bank", openingC: 100000 }];
     s.settings = { ...s.settings, retirementAge: 60 };
     const { rows, depletionAge } = buildLongTerm(s, null);
-    expect(depletionAge).toBe(60);
-    expect(rows[0].liquidC).toBeLessThanOrEqual(0);
+    expect(rows[0].liquidC).toBe(100000); // still R1,000 today
+    expect(depletionAge).toBe(61); // spent by the following year
+    expect(rows[1].liquidC).toBeLessThanOrEqual(0);
+  });
+
+  /* The age the warning names has to be an age the table can be read at: the
+     row for it shows the shortfall, and the row above it still has something
+     left. Anything else and the banner points at a year that still has money
+     in it. */
+  it("names an age whose own row shows the shortfall, the year before it solvent", () => {
+    [{ openingC: 100000, retirementAge: 60 }, { openingC: 5000000, retirementAge: 61 }].forEach((c) => {
+      const s = baseState();
+      s.accounts = [{ id: "a1", type: "bank", openingC: c.openingC }];
+      s.settings = { ...s.settings, retirementAge: c.retirementAge, planningAge: 75 };
+      s.comp = { ...s.comp, salaryMonthlyC: 0 };
+      const { rows, depletionAge } = buildLongTerm(s, null);
+      const at = rows.findIndex((r) => r.age === depletionAge);
+      expect(at).toBeGreaterThan(0);
+      expect(rows[at].liquidC).toBeLessThanOrEqual(0);
+      expect(rows[at - 1].liquidC).toBeGreaterThan(0);
+    });
   });
 
   /* The model somebody has just reset: every figure zero. Nothing ran out,
@@ -1011,8 +1080,9 @@ describe("buildLongTerm", () => {
     s.accounts = [{ id: "a1", type: "bank", openingC: 0 }];
     s.recurring = [{ id: "r2", categoryId: "c_food", amountC: -900000, day: 1 }];
     const { rows, depletionAge } = buildLongTerm(s, null);
-    expect(rows[0].liquidC).toBeGreaterThan(0); // age 60, still working
-    expect(depletionAge).toBe(62);
+    expect(rows[0].liquidC).toBe(0); // nothing today
+    expect(rows[1].liquidC).toBeGreaterThan(0); // a year of working has put some by
+    expect(depletionAge).toBe(63);
   });
 });
 
