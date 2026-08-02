@@ -17,5 +17,11 @@ export default defineConfig({
     environment: "node",
     environmentMatchGlobs: [["src/**/*.dom.test.jsx", "jsdom"]],
     include: ["src/**/*.test.{js,jsx}"],
+    /* The ResizeObserver stub and the unmount after every test were written
+       inline in the first DOM suite; they belong to every DOM suite there will
+       ever be, so they live in one file now. setupFiles takes no glob, so this
+       runs ahead of the node suites as well — it looks for a document before it
+       does anything, and in node it is an import and nothing else. */
+    setupFiles: ["./src/dom-setup.js"],
   },
 });
