@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
 import { supabase } from "./supabaseClient.js";
+import { loadUserState, saveUserState, forceSaveUserState } from "./persist.js";
 import { THEME_CSS } from "./theme.js";
 
 /* ============================================================
@@ -132,9 +133,16 @@ function Root() {
   const [freshAnyway, setFreshAnyway] = useState(false); // chose to work unsaved after a failed load
   const [attempt, setAttempt] = useState(0); // bumped by "Try again"
   const [demo, setDemo] = useState(!supabase); // no env vars -> demo automatically
-  const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
+  const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error | conflict
   const timer = useRef(null);
   const latest = useRef(null);
+  /* The revision this tab loaded or last wrote. Every save is checked against
+     it, so a tab that has been sitting idle since breakfast cannot post its
+     stale copy over a morning's work done in another one. */
+  const rev = useRef(null);
+  const revSupported = useRef(true); // false once we find the migration has not been run
+  const conflicted = useRef(false);  // a conflict is on screen and unresolved: stop writing
+  const inFlight = useRef(false);
   /* The save path must not close over `session`: a token refresh hands back a
      new session object, which would give `flush` — and therefore `onPersist` —
      a new identity, and identity is exactly what App's persist effect watches.
@@ -159,36 +167,72 @@ function Root() {
     if (freshAnyway) return;
     let cancelled = false;
     setBoot(undefined); setLoadError(null);
-    supabase.from("user_state").select("state").eq("user_id", session.user.id).maybeSingle()
-      .then(({ data, error }) => {
+    loadUserState(supabase, session.user.id)
+      .then((res) => {
         if (cancelled) return;
-        if (error) {
+        if (!res.ok) {
           // Do NOT fall through to boot=null: that seeds the demo model, and the
           // first edit would autosave it straight over the user's real row.
-          console.error(error);
+          console.error(res.error);
           clearTimeout(timer.current);
           latest.current = null; // drop any pending save so nothing can flush
-          setLoadError(error.message || "The server did not answer.");
+          setLoadError(res.error.message || "The server did not answer.");
           return;
         }
-        setBoot(data ? data.state : null);
+        // Read the revision alongside the state: it is what the next save is
+        // checked against, and it is only meaningful as at this read.
+        rev.current = res.rev;
+        revSupported.current = res.revSupported;
+        conflicted.current = false;
+        setBoot(res.state);
       });
     return () => { cancelled = true; };
   }, [session, attempt, freshAnyway]);
 
   const retryLoad = () => { setFreshAnyway(false); setLoadError(null); setBoot(undefined); setAttempt((a) => a + 1); };
 
+  /* Every outcome of a write lands here, including the one where we wrote
+     nothing. Nothing in this function decides what a conflict means — it puts
+     the choice in front of the user and stops. */
+  const settle = useCallback((res) => {
+    if (res.revSupported === false && revSupported.current) {
+      revSupported.current = false;
+      console.warn(
+        "user_state.rev is missing, so saves cannot be checked against a revision and two tabs can still " +
+        "overwrite each other. Run supabase/migrations/0001_add_rev.sql to fix it."
+      );
+    }
+    if (res.ok) { rev.current = res.rev; setSaveState("saved"); return; }
+    if (res.conflict) { conflicted.current = true; setSaveState("conflict"); return; }
+    console.error("Save failed:", res.error);
+    setSaveState("error");
+  }, []);
+
   const flush = useCallback(async () => {
     const s = sessionRef.current;
     if (!supabase || !s || latest.current == null) return;
+    if (conflicted.current) return; // the user has not chosen yet; nothing goes on the wire
+    /* Two writes in flight at once would carry the same `rev`, and the loser
+       would be reported as somebody else's edit — a conflict this tab caused
+       itself. Wait for the one on the wire instead. */
+    if (inFlight.current) {
+      clearTimeout(timer.current);
+      timer.current = setTimeout(flush, SAVE_DEBOUNCE_MS);
+      return;
+    }
+    inFlight.current = true;
     setSaveState("saving");
-    const { error } = await supabase.from("user_state").upsert(
-      { user_id: s.user.id, state: latest.current, updated_at: new Date().toISOString() },
-      { onConflict: "user_id" }
-    );
-    setSaveState(error ? "error" : "saved");
-    if (error) console.error("Save failed:", error);
-  }, []);
+    let res;
+    try {
+      res = await saveUserState(supabase, {
+        userId: s.user.id,
+        state: latest.current,
+        rev: rev.current,
+        revSupported: revSupported.current,
+      });
+    } finally { inFlight.current = false; }
+    settle(res);
+  }, [settle]);
 
   /* App reports every change here, and its persist effect lists this callback
      among its dependencies. Rebuilt on each render, that was a loop: a save set
@@ -199,6 +243,10 @@ function Root() {
      identity steady is the whole fix; the debounce below is unchanged. */
   const onPersist = useCallback((state) => {
     latest.current = state;
+    /* An unresolved conflict stops the saving, not the typing. Keep the newest
+       keystrokes to hand — "Keep this version" writes exactly this — but put
+       nothing on the wire until the user has said which version wins. */
+    if (conflicted.current) return;
     setSaveState("saving");
     clearTimeout(timer.current);
     timer.current = setTimeout(flush, SAVE_DEBOUNCE_MS);
@@ -210,6 +258,32 @@ function Root() {
     window.addEventListener("beforeunload", h);
     return () => window.removeEventListener("beforeunload", h);
   }, [flush]);
+
+  /* The user chose the version stored elsewhere. Drop what this tab is holding,
+     including the pending save, and load the row again — same path as "Try
+     again", so the revision comes back with it. */
+  const takeStored = () => {
+    clearTimeout(timer.current);
+    latest.current = null;
+    conflicted.current = false;
+    setSaveState("idle");
+    setBoot(undefined);
+    setAttempt((a) => a + 1);
+  };
+
+  /* The user chose what is in front of them, knowing it costs the other
+     version. Read where the row has got to and write over that. */
+  const keepMine = async () => {
+    const s = sessionRef.current;
+    if (!supabase || !s || latest.current == null) return;
+    conflicted.current = false;
+    setSaveState("saving");
+    settle(await forceSaveUserState(supabase, {
+      userId: s.user.id,
+      state: latest.current,
+      revSupported: revSupported.current,
+    }));
+  };
 
   if (demo) return (
     <>
@@ -255,6 +329,26 @@ function Root() {
         )}
         <button onClick={() => supabase.auth.signOut()}>Sign out</button>
       </div>
+      {/* A conflict is the failure half of the split above: the polite region
+          says nothing (it must not still be reading "All changes saved"), and
+          the assertive one carries it. The buttons sit outside the alert so
+          the announcement is the sentence, not the sentence plus its
+          furniture. Guessing which version the user wants is exactly how the
+          morning got lost in the first place, so we do not guess. */}
+      {saveState === "conflict" && (
+        <div className="shell-bar clash">
+          <span role="alert">
+            Not saved. This model was changed in another tab or on another device after this one loaded it,
+            so saving would wipe that newer version. Nothing has been overwritten. Tell us which version to keep.
+          </span>
+          <button onClick={takeStored}>
+            Load the newer version — everything you have changed in this tab is lost
+          </button>
+          <button onClick={keepMine}>
+            Keep this version — everything saved in the other tab is lost
+          </button>
+        </div>
+      )}
       <App boot={boot} onPersist={onPersist} />
       <style>{THEME_CSS + BAR_CSS}</style>
     </>
@@ -297,6 +391,11 @@ const BAR_CSS = `
     justify-content: flex-end; padding: 6px 14px; background: var(--surface-bar); border-bottom: 1px solid var(--border-2);
     color: var(--text-muted); font: 0.75rem "Inter", system-ui, sans-serif; }
   .shell-bar.demo { justify-content: center; color: var(--neg); background: var(--demo-bg); }
+  /* Sits under the bar rather than inside it: the sentence has to be readable
+     before either button is worth pressing. */
+  .shell-bar.clash { position: static; flex-wrap: wrap; justify-content: center; color: var(--neg);
+    background: var(--neg-bg-2); padding: 9px 14px; line-height: 1.45; }
+  .shell-bar.clash button { border-color: var(--neg); color: var(--neg); }
   .shell-bar button { background: none; border: 1px solid var(--border-2); color: var(--text-label); border-radius: 6px;
     padding: 3px 10px; font-size: 0.71875rem; cursor: pointer; }
   .shell-bar .save.saved { color: var(--accent-strong); }
