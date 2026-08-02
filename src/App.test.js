@@ -990,6 +990,30 @@ describe("buildLongTerm", () => {
     expect(depletionAge).toBe(60);
     expect(rows[0].liquidC).toBeLessThanOrEqual(0);
   });
+
+  /* The model somebody has just reset: every figure zero. Nothing ran out,
+     because nothing was ever there, and the Long-Term page must not say it did. */
+  it("reports no depletion for a model with nothing in it, nothing having run out", () => {
+    const s = baseState();
+    s.accounts = [{ id: "a1", type: "bank", openingC: 0 }];
+    s.comp = { ...s.comp, salaryMonthlyC: 0 };
+    s.recurring = [];
+    const { rows, depletionAge } = buildLongTerm(s, null);
+    expect(rows.every((r) => r.liquidC === 0)).toBe(true);
+    expect(rows.some((r) => r.retired)).toBe(true);
+    expect(depletionAge).toBeNull();
+  });
+
+  /* Assets do not have to be there on day one to count as having existed:
+     saved out of salary and then spent in retirement is a real depletion. */
+  it("records a depletion age for assets built up while working and then spent", () => {
+    const s = baseState();
+    s.accounts = [{ id: "a1", type: "bank", openingC: 0 }];
+    s.recurring = [{ id: "r2", categoryId: "c_food", amountC: -900000, day: 1 }];
+    const { rows, depletionAge } = buildLongTerm(s, null);
+    expect(rows[0].liquidC).toBeGreaterThan(0); // age 60, still working
+    expect(depletionAge).toBe(62);
+  });
 });
 
 /* ============================================================
@@ -1136,10 +1160,12 @@ describe("blankState", () => {
     });
   });
 
-  /* Not a fault: with nothing saved and nothing coming in, the first retired
-     year is the year the money runs out, and the Overview says so. */
-  it("reports the retirement age as the depletion age, there being nothing to live on", () => {
-    expect(buildLongTerm(blankState, null).depletionAge).toBe(blankState.settings.retirementAge);
+  /* This is the model somebody is looking at seconds after pressing Reset.
+     With nothing saved and nothing coming in there is nothing to run out, so
+     neither the Overview nor the Long-Term page may claim the assets were
+     exhausted at the retirement age. */
+  it("reports no depletion age, there being nothing that could have run out", () => {
+    expect(buildLongTerm(blankState, null).depletionAge).toBeNull();
   });
 });
 

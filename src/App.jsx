@@ -639,6 +639,16 @@ export const buildLongTerm = (state, scenario) => {
   const rows = [];
   const years = st.planningAge - st.currentAge;
   let depletionAge = null;
+  /* Depletion means money that was there and then ran out, so it takes assets
+     to have been positive at some point first — either in the balances we
+     start from or in a year the projection reaches before the shortfall.
+     Without that a freshly reset model, where every figure is zero and every
+     projected year is therefore zero, would report the retirement age as the
+     year the assets were exhausted and put a red warning on a plan that has
+     nothing in it yet. Someone with nothing who is never projected to have
+     anything has a different problem from someone whose money runs out at 71,
+     and this page is only about the second. */
+  let hadLiquid = cash + invest + crypto > 0;
   const y0 = +nowYm().slice(0, 4);
   for (let i = 0; i <= years; i++) {
     const age = st.currentAge + i;
@@ -671,7 +681,8 @@ export const buildLongTerm = (state, scenario) => {
     const liquid = cash + invest + crypto;
     const assets = liquid + propVal;
     const netWorth = assets - mortBal;
-    if (depletionAge === null && retired && liquid <= 0) depletionAge = age;
+    if (depletionAge === null && retired && hadLiquid && liquid <= 0) depletionAge = age;
+    if (liquid > 0) hadLiquid = true;
     rows.push({ year: y0 + i, age, retired, incomeC: income, spendC: spend, netC: net,
       cashC: cash, investC: invest, cryptoC: crypto, propertyC: propVal, mortC: mortBal, assetsC: assets, liquidC: liquid, netWorthC: netWorth });
     // escalate for next year
@@ -1223,7 +1234,7 @@ function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut
           help={"The running total of the next 12 monthly nets from the Forecast page. It is how much better or worse off the year leaves you — not a balance, and not what you will have in the bank."} />
         <Stat label="Retirement depletion" value={lt.depletionAge ? `age ${lt.depletionAge}` : "clear"}
           sub={lt.depletionAge ? "assets exhausted" : `retired years only, to age ${state.settings.planningAge}`} tone={lt.depletionAge ? "warn" : "pos"}
-          help={`This only looks at the retired years. It reports the first year, at or after your retirement age of ${state.settings.retirementAge}, in which your cash, investments and crypto together fall to zero. It does not check the years before you retire — so "clear" does not mean you cannot run short while still working. Your property is not counted either, because you would have to sell it to spend it.`} />
+          help={`This only looks at the retired years. It reports the first year, at or after your retirement age of ${state.settings.retirementAge}, in which your cash, investments and crypto together fall to zero, having been above zero at some point first — a model with nothing in it has nothing to run out, so it stays clear. It does not check the years before you retire — so "clear" does not mean you cannot run short while still working. Your property is not counted either, because you would have to sell it to spend it.`} />
       </div>
 
       <Card title="12-month cashflow ribbon" className="span2"
