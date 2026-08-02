@@ -70,14 +70,61 @@ function AuthScreen({ onDemo }) {
   );
 }
 
+/* The boundary is mounted outside Root, and by the time it draws, the tree that
+   was holding the loaded model has been thrown away. Park what came off the
+   server here as it arrives, so a model that will not open can still be handed
+   back to the person it belongs to. */
+let loadedState = null;
+export const rememberLoadedState = (state) => { loadedState = state; };
+
 /* A render throw used to leave a permanently blank page: nothing caught it and
    there is no reset path in the app. Catch it, say so plainly, and offer the
-   reload. Nothing here touches the stored row — the data is not the suspect. */
-class ErrorBoundary extends React.Component {
-  constructor(props) { super(props); this.state = { error: null }; }
-  static getDerivedStateFromError(error) { return { error }; }
+   reload. Nothing here touches the stored row — the data is not the suspect.
+
+   The reload on its own is not an escape, though. A saved model that loads and
+   then kills the renderer throws again on every reload, and Settings → Reset is
+   behind an App that never draws: the user is locked out of their own account
+   for good. So this also offers the way out LoadErrorScreen already has — the
+   app on a fresh model, with no `onPersist`, so the copy on the server cannot
+   be written over — and a download of that copy, because a model you cannot
+   open is still the only one you have. */
+export class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null, fresh: false, exportError: null }; }
+  /* `fresh` comes off on every throw. If the fresh model is what threw, drawing
+     it again is a loop the fallback cannot get out of, and a fallback that
+     throws is exactly the blank page this class exists to prevent. */
+  static getDerivedStateFromError(error) { return { error, fresh: false }; }
   componentDidCatch(error, info) { console.error("Ledgerline stopped:", error, info); }
+
+  /* Serialised at the click and not in render, because render is the one place
+     this component cannot afford to throw. */
+  downloadLoaded() {
+    try {
+      const blob = new Blob([JSON.stringify(loadedState, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = "ledgerline-saved-data.json"; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+      this.setState({ exportError: null });
+    } catch (e) {
+      this.setState({ exportError: (e && e.message) || String(e) });
+    }
+  }
+
   render() {
+    /* No `boot` and no `onPersist`, both deliberate: the saved model is the
+       suspect and it is also the only copy, so the way back to a working app is
+       to leave it entirely alone. Same bargain LoadErrorScreen offers. */
+    if (this.state.fresh) return (
+      <>
+        <div className="shell-bar demo">
+          Your saved data could not be drawn — this is a fresh, empty model and nothing in it is being saved.
+          <button onClick={() => window.location.reload()}>Reload and try your saved data again</button>
+        </div>
+        <App />
+        <style>{THEME_CSS + BAR_CSS}</style>
+      </>
+    );
     if (!this.state.error) return this.props.children;
     const detail = (this.state.error && this.state.error.message) || String(this.state.error);
     return (
@@ -87,10 +134,32 @@ class ErrorBoundary extends React.Component {
           <div className="auth-sub" role="alert">Something went wrong on this page</div>
           <p className="auth-note">
             Ledgerline hit an error and stopped drawing the page. Your saved data has not been changed or
-            deleted — this went wrong while displaying it, not while storing it. Reloading usually clears it.
+            deleted — this went wrong while displaying it, not while storing it. Reloading clears a one-off;
+            if the same error comes back every time you reload, it is your saved data being drawn that is at
+            fault, and reloading will keep bringing you back here.
           </p>
           <div className="auth-msg err mono-s">{detail}</div>
           <button className="auth-btn" onClick={() => window.location.reload()}>Reload the page</button>
+          <div className="auth-div" />
+          <button className="auth-link dim" onClick={() => this.setState({ fresh: true })}>
+            Or carry on in a fresh, empty-of-your-data model. Nothing you do in it will be saved, so what is
+            stored on your account stays exactly as it is — including whatever is causing this.
+          </button>
+          {loadedState ? (
+            <button className="auth-link dim" onClick={() => this.downloadLoaded()}>
+              Download the data this page loaded, as a .json file. It is what came off the server, before
+              anything tried to draw it. Nothing in Ledgerline reads it back in — it is a copy to keep or to
+              send on for help, not a restore.
+            </button>
+          ) : (
+            <p className="auth-note">
+              There is no download to offer: the page stopped before your saved data reached it, so the app is
+              not holding a copy to give you. What is on the server is untouched.
+            </p>
+          )}
+          {this.state.exportError && (
+            <div className="auth-msg err mono-s" role="alert">The download did not start: {this.state.exportError}</div>
+          )}
         </div>
         <style>{THEME_CSS + AUTH_CSS}</style>
       </div>
@@ -160,7 +229,10 @@ function Root() {
 
   // load persisted state on sign-in
   useEffect(() => {
-    if (!supabase || !session) return;
+    /* A model belongs to the account that loaded it. Signing out has to take it
+       with it, or the next person to sign in at this keyboard could be offered
+       somebody else's figures by the crash screen's download. */
+    if (!supabase || !session) { rememberLoadedState(null); return; }
     // A token refresh hands back a new session object and re-runs this effect.
     // Once the user has chosen the fresh model, leave them in it — reloading
     // underneath them would throw away everything they have typed since.
@@ -184,6 +256,8 @@ function Root() {
         rev.current = res.rev;
         revSupported.current = res.revSupported;
         conflicted.current = false;
+        // Kept where the boundary can still reach it if drawing this throws.
+        rememberLoadedState(res.state);
         setBoot(res.state);
       });
     return () => { cancelled = true; };
