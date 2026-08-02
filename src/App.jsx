@@ -489,6 +489,29 @@ const shortValue = (v) => {
   return s.length > 42 ? `${s.slice(0, 41)}…` : s;
 };
 
+/* The references one row makes to another by id, and the only place a dangling
+   one can be sent.
+
+   These are the whole of it: a transaction names an account and a category,
+   recurring items, annual items and import rules name a category, and a
+   balance snapshot names an account. Nothing else in the model points at
+   anything (the one remaining reference, txns.batchId, is a row naming an
+   import and is repaired above).
+
+   None of them has ever been checked, and that has been survivable only
+   because no page anywhere can delete an account or a category — the rows on
+   the other end cannot go away. That stops being true the moment those two get
+   a create/rename/delete of their own, and every one of these turns into a
+   live hazard at the same time. */
+const CATEGORY_REFS = ["txns", "recurring", "annual", "rules"];
+const ACCOUNT_REFS = ["txns", "snapshots"];
+const UNCAT = "cat_uncat";
+const countOf = (n, key) => `${n} ${ROW_NOUN[key]}${n === 1 ? "" : "s"}`;
+const listOf = (found) => {
+  const parts = found.map(({ key, n }) => countOf(n, key));
+  return parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts[0];
+};
+
 /* Everything loaded off the server comes through here first.
  *
  * The whole of the migration strategy used to be `boot || initialState`: the
@@ -596,6 +619,105 @@ export function hydrate(saved) {
      model and nothing currently reads it loudly enough to have caught this. */
   if (batchRemint.size) {
     out.txns = out.txns.map((t) => (t && batchRemint.has(t.batchId) ? { ...t, batchId: batchRemint.get(t.batchId) } : t));
+  }
+
+  /* Referential integrity, on the same principle as the repair above: repair,
+     do not discard. A transaction naming a category that is not there is still
+     a real transaction for a real amount, and dropping it would move the
+     user's balances — so it is sent somewhere visible instead.
+
+     Somewhere visible is cat_uncat. It is the category the app already treats
+     as "we do not know": AddTxn opens on it, applyRules falls back to it for
+     every unmatched import, and blankState keeps it through a reset. Relying
+     on it, though, means guaranteeing it, which nothing did — a model without
+     it turns both of those hardcoded fallbacks into fresh dangling references
+     of their own — so it is put back when it is missing. That is the one row
+     this pass ever creates, and it is the app's own constant rather than a
+     guess: same id, same name, same kind as the seed.
+
+     All four category references move together, and that is load-bearing
+     rather than tidiness. Moving only the transactions leaves the recurring
+     item that used to match them stranded on the dead id, and the forecast
+     then pays its planned amount *and* sweeps the same transactions back in as
+     unplanned spending: a month of R11 000 of food reads as R22 000. Measured,
+     and pinned by a test.
+
+     Two things this deliberately does not do:
+
+     A category's kind dies with the category, so a transfer whose category was
+     deleted counted as spending before this pass and counts as spending after
+     it — cat_uncat is an expense, exactly as an absent category already was to
+     isFlow. Nothing left in the model remembers it was a transfer. What
+     changes is that the row now names something the user can see and re-point
+     rather than a dead id behind a dropdown that renders blank.
+
+     And collapsing two dead categories onto cat_uncat puts two recurring items
+     on one category, which matchRecurring double counts — but it double counts
+     that way today for two live items sharing a live category, so this is an
+     existing coarseness being reached rather than a new fault. The place to
+     stop it is the delete that made the reference dangle: a category with rows
+     pointing at it should not be deletable without saying where they go. */
+  const liveCats = new Set();
+  for (const c of out.categories) if (typeof c.id === "string" && c.id) liveCats.add(c.id);
+  if (!liveCats.has(UNCAT)) {
+    out.categories = [...out.categories, { ...initialState.categories.find((c) => c.id === UNCAT) }];
+    liveCats.add(UNCAT);
+  }
+  const moved = [];
+  for (const key of CATEGORY_REFS) {
+    const n = out[key].filter((row) => !liveCats.has(row.categoryId)).length;
+    if (!n) continue;
+    out[key] = out[key].map((row) => (liveCats.has(row.categoryId) ? row : { ...row, categoryId: UNCAT }));
+    moved.push({ key, n });
+  }
+
+  /* The account half is not repaired, and that is a decision rather than an
+     omission. There is no uncategorised account to move a transaction to, and
+     every candidate for one is a statement about where the user's money
+     actually sits: the first account in the list is a guess, and inventing an
+     "Unassigned" account puts a row on the Accounts page that the user never
+     opened and that every balance and net-worth figure then has to explain.
+     Both are worse than the gap, because a wrong answer about which account
+     holds R2 500 reads exactly like a right one.
+
+     So the rows stay where they are and the user is told. What they are being
+     told is worth spelling out: accountBalance filters by accountId, so an
+     orphaned transaction is in no account's balance and therefore in no net
+     worth, while still counting in the month's income and spending and in the
+     forecast — the two halves of the app disagree with each other and neither
+     says why. An orphaned snapshot is quieter, being read only through the
+     same filter, and shows up as a mark to market that no longer marks
+     anything. Naming both is the whole of the fix available here. */
+  const liveAccs = new Set();
+  for (const a of out.accounts) if (typeof a.id === "string" && a.id) liveAccs.add(a.id);
+  const stranded = [];
+  for (const key of ACCOUNT_REFS) {
+    const n = out[key].filter((row) => !liveAccs.has(row.accountId)).length;
+    if (n) stranded.push({ key, n });
+  }
+
+  /* One line, in the trail every other change to the model already writes to,
+     with the same kind as the row repair below it because it is the same kind
+     of event: the model was not what it said it was and hydrate acted.
+
+     Written at most once for any given wording, which the quarantine below
+     does not need to be. A quarantined row is gone, so the finding cannot
+     recur; an orphaned account reference is still there on the next load, and
+     the freshly hydrated state is deliberately not saved, so an unconditional
+     line would add a row to the audit trail on every page load for as long as
+     the orphan sits there — and the user would be paying for it in their own
+     saved model the next time they edited anything. */
+  if (moved.length || stranded.length) {
+    const parts = [];
+    if (moved.length) parts.push(`Moved ${listOf(moved)} to Uncategorised, because the category named is not in this model any more. No amount has changed: a category that is not there was already counted as spending rather than as a transfer, and this only puts it where you can see it and set it right.`);
+    if (stranded.length) {
+      const one = stranded.length === 1 && stranded[0].n === 1;
+      parts.push(`${listOf(stranded)} ${one ? "names" : "name"} an account that is not in this model any more. ${one ? "It has" : "They have"} been left exactly as ${one ? "it is" : "they are"}, because nothing here knows which account the money sits in — but a transaction filed this way still counts in the month's income and spending while counting in no account balance and in no net worth.`);
+    }
+    const detail = parts.join(" ");
+    if (!out.audit.some((a) => a.kind === "repair" && a.detail === detail)) {
+      out.audit = [{ id: uid("aud"), when: new Date().toISOString().slice(0, 16).replace("T", " "), kind: "repair", detail }, ...out.audit];
+    }
   }
 
   /* A row that went missing without a word would be indistinguishable from a

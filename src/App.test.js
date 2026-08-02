@@ -1992,3 +1992,223 @@ describe("hydrate, on a row whose fields are the wrong type", () => {
     expect(b).toEqual(before);
   });
 });
+
+/* ============================================================
+   A REFERENCE THAT NAMES A ROW WHICH IS NO LONGER THERE
+   ============================================================
+
+   Four references hold the model together — txns.accountId, txns.categoryId,
+   the categoryId on recurring items, annual items and import rules, and
+   snapshots.accountId — and nothing has ever checked that the row on the other
+   end of one is still there.
+
+   Nothing could delete that row, which is the only reason this has been
+   survivable, and that is about to stop being true. What a dangling reference
+   does today, each measured below through the function that actually reads it:
+   isFlow reads an unknown category as a flow, so a transfer quietly becomes
+   spending; accountBalance filters by accountId, so a transaction naming an
+   account that is gone is in no balance and in no net worth while still
+   counting in the month; and catName degrades to "—" against a <select> built
+   only from live categories, so the dead id sits in state where nobody can see
+   it. */
+describe("hydrate, on a reference that names a category or account which is not there", () => {
+  freezeNow();
+
+  const YM = "2026-03"; // the frozen month, which is what buildForecast opens on
+  const emptyBlob = (damage = {}) => ({ ...structuredClone(blankState), ...damage });
+  const cats = (...dropped) => structuredClone(blankState.categories).filter((c) => !dropped.includes(c.id));
+  const txn = (over = {}) => ({ id: uid("txn"), accountId: "acc_bank", date: `${YM}-15`, desc: "WOOLWORTHS CLAREMONT", amountC: -110000, categoryId: "cat_food", source: "import", ...over });
+  const repairLine = (st) => st.audit.find((a) => a.kind === "repair");
+  const renderApp = (boot) => renderToString(React.createElement(App, { boot }));
+  const monthSpend = (st) => st.txns.filter((t) => t.date.slice(0, 7) === YM && isFlow(t, st.categories) && t.amountC < 0).reduce((s, t) => s + t.amountC, 0);
+  const netWorth = (st) => st.accounts.reduce((s, a) => s + accountBalance(a, st.txns, st.snapshots), 0);
+  const net = (st) => buildForecast(st, null).rows[0].net;
+
+  /* The sharpest of the four, because the arithmetic changes and nothing says
+     so: isFlow's `!c ||` reads a category that is not there as a flow, so a
+     transfer between the user's own accounts starts counting as money spent. */
+  it("counts a transfer whose category is gone as spending, and moves it where that can be seen", () => {
+    const b = emptyBlob({
+      categories: cats("cat_invest"),
+      txns: [txn({ desc: "TRANSFER TO INVESTMENT", amountC: -500000, categoryId: "cat_invest" })],
+    });
+    expect(isFlow(b.txns[0], b.categories)).toBe(true);
+    expect(monthSpend(b)).toBe(-500000); // R5 000 of spending that never left the user's money
+
+    const st = hydrate(b);
+    expect(st.txns[0].categoryId).toBe("cat_uncat");
+    expect(st.txns[0].amountC).toBe(-500000);
+    /* The figure itself does not come back, and this is the honest limit of
+       the pass: kind: "transfer" lived on the category row that was deleted,
+       so there is nothing left in the model that knows this was a transfer.
+       Uncategorised is an expense, exactly as an absent category already was.
+       What changes is that the row now names something the user can see and
+       re-point, instead of a dead id behind a blank dropdown. */
+    expect(monthSpend(st)).toBe(-500000);
+  });
+
+  it("shows the reassigned transaction on the page instead of an em dash", () => {
+    const b = emptyBlob({ categories: cats("cat_food"), txns: [txn()] });
+    const html = renderApp(b);
+    expect(html).toContain("Uncategorised");
+    expect(html).not.toContain("<td>—</td>");
+  });
+
+  /* A repair that moved only the transactions would be worse than none: the
+     recurring item left on the dead id matches nothing, so the forecast pays
+     its planned amount *and* sweeps the same transactions in again as
+     unplanned spending. Both ends of the reference move together. */
+  it("moves a recurring item and the transactions it matches together, so the month is not counted twice", () => {
+    const food = { id: "rec_food", name: "Food", categoryId: "cat_food", amountC: -1100000, day: 15 };
+    const spend = txn({ amountC: -1100000, categoryId: "cat_food" });
+    const intact = emptyBlob({ recurring: [food], txns: [spend] });
+    const damaged = { ...intact, categories: cats("cat_food") };
+    const txnsOnly = { ...damaged, txns: [{ ...spend, categoryId: "cat_uncat" }] };
+    expect(net(txnsOnly)).toBe(-2200000);
+    expect(net(intact)).toBe(-1100000);
+
+    const st = hydrate(damaged);
+    expect(st.recurring[0].categoryId).toBe("cat_uncat");
+    expect(st.txns[0].categoryId).toBe("cat_uncat");
+    expect(net(st)).toBe(net(intact));
+  });
+
+  it("moves an annual item off a category that is gone", () => {
+    const b = emptyBlob({ categories: cats("cat_carins"), annual: [{ id: "ann_car", name: "Car Insurance", categoryId: "cat_carins", month: 3, amountC: -1450000, escalationPct: 6 }] });
+    const st = hydrate(b);
+    expect(st.annual[0].categoryId).toBe("cat_uncat");
+    expect(st.annual[0].amountC).toBe(-1450000);
+  });
+
+  /* applyRules returns rule.categoryId with no check that it names anything,
+     so one dead rule stamps the dead id onto every row of every import from
+     then on. This is the reference that spreads. */
+  it("takes the dead category off an import rule, which would otherwise stamp it on every imported row", () => {
+    const b = emptyBlob({ categories: cats("cat_fuel"), rules: [{ id: "rule_shell", pattern: "SHELL", categoryId: "cat_fuel" }] });
+    const st = hydrate(b);
+    expect(st.rules[0].categoryId).toBe("cat_uncat");
+    expect(st.rules[0].pattern).toBe("SHELL"); // the user's rule is kept, only its target moves
+  });
+
+  it("takes a transaction that carries no categoryId at all to the same place", () => {
+    const b = emptyBlob({ txns: [txn({ categoryId: undefined })] });
+    const st = hydrate(b);
+    expect(st.txns[0].categoryId).toBe("cat_uncat");
+  });
+
+  /* Everything above lands on cat_uncat, so cat_uncat has to be there. It is
+     in blankState today and it is hardcoded in AddTxn and in applyRules, but
+     nothing enforces it, and a model without it turns every one of those into
+     a fresh dangling reference. */
+  it("puts cat_uncat back when the saved model has not got one", () => {
+    const b = emptyBlob({ categories: cats("cat_uncat", "cat_food"), txns: [txn()] });
+    const st = hydrate(b);
+    expect(st.categories.filter((c) => c.id === "cat_uncat")).toHaveLength(1);
+    expect(st.categories.find((c) => c.id === "cat_uncat")).toEqual(initialState.categories.find((c) => c.id === "cat_uncat"));
+    expect(st.txns[0].categoryId).toBe("cat_uncat");
+    expect(renderApp(b)).toContain("Uncategorised");
+  });
+
+  it("leaves the category list alone when cat_uncat is already in it", () => {
+    const st = hydrate(emptyBlob({ txns: [txn({ categoryId: "cat_gone" })] }));
+    expect(st.categories.map((c) => c.id)).toEqual(blankState.categories.map((c) => c.id));
+  });
+
+  /* The account half is deliberately not repaired. There is no uncategorised
+     account to move a transaction to, and every candidate — the first account,
+     a new one invented here — is a statement about where the user's money
+     actually sits. The disagreement it leaves behind is measured here so that
+     it is on the record rather than in a comment. */
+  it("leaves a transaction naming an account that is gone exactly where it is, and says so", () => {
+    const b = emptyBlob({ txns: [txn({ accountId: "acc_gone", amountC: -250000, desc: "ORPHANED DEBIT" })] });
+    const st = hydrate(b);
+    expect(st.txns[0].accountId).toBe("acc_gone");
+    expect(st.txns[0].amountC).toBe(-250000);
+    expect(netWorth(st)).toBe(0); // in no account balance
+    expect(monthSpend(st)).toBe(-250000); // and in the month's spending all the same
+    expect(repairLine(st).detail).toContain("1 transaction");
+    expect(repairLine(st).detail).toContain("account that is not in this model");
+  });
+
+  it("leaves a balance snapshot naming an account that is gone, and counts it in the same line", () => {
+    const b = emptyBlob({ snapshots: [{ id: "snap_x", accountId: "acc_gone", date: `${YM}-01`, balanceC: 99900000 }] });
+    const st = hydrate(b);
+    expect(st.snapshots[0].accountId).toBe("acc_gone");
+    expect(st.snapshots[0].balanceC).toBe(99900000);
+    expect(repairLine(st).detail).toContain("1 balance snapshot");
+  });
+
+  it("names what it moved and what it could not, in one line, in the trail the app already keeps", () => {
+    const b = emptyBlob({
+      categories: cats("cat_food", "cat_fuel"),
+      txns: [txn(), txn({ desc: "SHELL ULTRA CITY", categoryId: "cat_fuel" }), txn({ desc: "ORPHANED DEBIT", accountId: "acc_gone", categoryId: "cat_general" })],
+      rules: [{ id: "rule_shell", pattern: "SHELL", categoryId: "cat_fuel" }],
+    });
+    const line = repairLine(hydrate(b));
+    expect(line.kind).toBe("repair");
+    expect(line.id).toMatch(/^aud_/);
+    expect(line.when).toBe("2026-03-15 12:00");
+    expect(line.detail).toContain("Moved 2 transactions and 1 import rule to Uncategorised");
+    expect(line.detail).toContain("1 transaction names an account that is not in this model");
+  });
+
+  /* An unrepairable finding is re-found on every single load — the freshly
+     hydrated state is deliberately not saved — so a line that was written
+     unconditionally would grow the audit trail by one row per page load for
+     as long as the orphan sits there. */
+  it("does not write the same line again on the next load", () => {
+    const b = emptyBlob({ txns: [txn({ accountId: "acc_gone" })] });
+    const once = hydrate(b);
+    expect(once.audit.filter((a) => a.kind === "repair")).toHaveLength(1);
+    const twice = hydrate(once);
+    expect(twice.audit.filter((a) => a.kind === "repair")).toHaveLength(1);
+    expect(twice.audit).toEqual(once.audit);
+  });
+
+  it("says nothing, and moves nothing, in a model whose references are all live", () => {
+    const b = structuredClone(initialState);
+    const st = hydrate(b);
+    expect(st.audit).toEqual(initialState.audit);
+    ["categories", "accounts", "recurring", "annual", "rules", "txns", "snapshots"].forEach((key) => {
+      expect(st[key], key).toEqual(b[key]);
+    });
+  });
+
+  /* The seeded and the empty model are what a new user and a reset user get,
+     and either one arriving with a dangling reference would be this pass
+     firing on the app's own data. */
+  it("finds nothing dangling in the models the app ships with", () => {
+    [initialState, blankState].forEach((model) => {
+      const catIds = new Set(model.categories.map((c) => c.id));
+      const accIds = new Set(model.accounts.map((a) => a.id));
+      [...model.txns, ...model.recurring, ...model.annual, ...model.rules].forEach((r) => expect(catIds.has(r.categoryId), r.id).toBe(true));
+      [...model.txns, ...model.snapshots].forEach((r) => expect(accIds.has(r.accountId), r.id).toBe(true));
+    });
+  });
+
+  it("draws a model whose references are all dangling rather than throwing", () => {
+    const b = emptyBlob({
+      categories: [],
+      accounts: [],
+      txns: [txn({ accountId: "acc_gone", categoryId: "cat_gone" })],
+      recurring: [{ id: "rec_a", name: "Food", categoryId: "cat_gone", amountC: -1100000, day: 15 }],
+      snapshots: [{ id: "snap_x", accountId: "acc_gone", date: `${YM}-01`, balanceC: 100 }],
+    });
+    expect(() => renderApp(b)).not.toThrow();
+    const st = hydrate(b);
+    expect(st.categories.map((c) => c.id)).toEqual(["cat_uncat"]);
+    expect(st.txns[0].categoryId).toBe("cat_uncat");
+  });
+
+  it("does not touch the blob it was handed", () => {
+    const b = emptyBlob({
+      categories: cats("cat_food", "cat_uncat"),
+      txns: [txn(), txn({ accountId: "acc_gone" })],
+      recurring: [{ id: "rec_food", name: "Food", categoryId: "cat_food", amountC: -1100000, day: 15 }],
+      rules: [{ id: "rule_w", pattern: "WOOLWORTHS", categoryId: "cat_food" }],
+    });
+    const before = structuredClone(b);
+    hydrate(b);
+    expect(b).toEqual(before);
+  });
+});
