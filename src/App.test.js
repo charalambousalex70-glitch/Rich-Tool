@@ -1782,3 +1782,213 @@ describe("a saved model an older client wrote", () => {
     }
   });
 });
+
+/* ============================================================
+   A ROW WHOSE FIELDS ARE THE WRONG TYPE
+   ============================================================
+
+   hydrate put the right kind of thing at every top-level key and said nothing
+   about what was inside a row, which is where the next lockout came from: a
+   saved model carrying date: 20260115 — the same date, as a number rather than
+   a string — walked through all of it and then reached
+   txns.filter((t) => t.date.slice(0, 7) === ym), which runs before anything is
+   drawn, on every page.
+
+   The wrong type in a money field does not throw, which is worse: it turns
+   every total that row is added to into a concatenated string. Both are here,
+   each measured through the function that actually reads the field. */
+describe("hydrate, on a row whose fields are the wrong type", () => {
+  freezeNow();
+
+  const savedBlob = (damage = {}) => ({ ...structuredClone(initialState), ...damage });
+  const renderApp = (boot) => renderToString(React.createElement(App, { boot }));
+  const txn = (over = {}) => ({ ...structuredClone(initialState.txns[0]), ...over });
+  const bankAcc = () => structuredClone(initialState.accounts.find((a) => a.id === "acc_bank"));
+  const investAcc = () => structuredClone(initialState.accounts.find((a) => a.id === "acc_invest"));
+  const repairLine = (st) => st.audit.find((a) => a.kind === "repair");
+
+  /* The crash, reproduced: this is the blob the ErrorBoundary work was proved
+     against, and buildForecast is the first thing every page runs. */
+  it("takes the numeric date the user was locked out by", () => {
+    const b = savedBlob({ txns: [txn({ date: 20260115 })] });
+    expect(() => buildForecast(b, null)).toThrow(/\.date\.slice is not a function/);
+
+    const st = hydrate(b);
+    expect(st.txns[0].date).toBe("2026-01-15");
+    expect(() => buildForecast(st, null)).not.toThrow();
+    expect(() => renderApp(b)).not.toThrow();
+  });
+
+  it("puts that date back where the month views look for it", () => {
+    const st = hydrate(savedBlob({ txns: [txn({ date: 20260115 })] }));
+    expect(st.txns.filter((t) => t.date.slice(0, 7) === "2026-01")).toHaveLength(1);
+  });
+
+  it("trims a full timestamp back to the day, which is what the app compares", () => {
+    const b = savedBlob({ txns: [txn({ date: "2026-01-15T09:12:00.000Z", amountC: -100000 })], snapshots: [] });
+    const acc = bankAcc();
+    // as saved, the timestamp sorts after the day it happened on, so a balance
+    // asked for on that date leaves the transaction out
+    expect(accountBalance(acc, b.txns, b.snapshots, "2026-01-15")).toBe(acc.openingC);
+
+    const st = hydrate(b);
+    expect(st.txns[0].date).toBe("2026-01-15");
+    expect(accountBalance(acc, st.txns, st.snapshots, "2026-01-15")).toBe(acc.openingC - 100000);
+  });
+
+  it("takes a numeric date on a balance snapshot too, which is sorted rather than sliced", () => {
+    const b = savedBlob({
+      txns: [],
+      snapshots: [
+        { id: "snap_a", accountId: "acc_invest", date: 20260115, balanceC: 6520000 },
+        { id: "snap_b", accountId: "acc_invest", date: 20260215, balanceC: 6790000 },
+      ],
+    });
+    const acc = investAcc();
+    expect(() => accountBalance(acc, b.txns, b.snapshots)).toThrow(/localeCompare is not a function/);
+
+    const st = hydrate(b);
+    expect(st.snapshots.map((s) => s.date)).toEqual(["2026-01-15", "2026-02-15"]);
+    expect(accountBalance(acc, st.txns, st.snapshots)).toBe(6790000);
+  });
+
+  it("does not read just any eight-digit number as a date", () => {
+    const st = hydrate(savedBlob({ txns: [txn({ date: 20261332 }), txn({ date: 45678901, desc: "SHELL ULTRA CITY" })] }));
+    expect(st.txns).toHaveLength(0);
+  });
+
+  it("will not read 01/02/2026, because that is two different days", () => {
+    const st = hydrate(savedBlob({ txns: [txn({ desc: "CHECKERS HYPER", date: "01/02/2026" })] }));
+    expect(st.txns).toHaveLength(0);
+    expect(repairLine(st).detail).toContain('date was "01/02/2026"');
+  });
+
+  /* Money is integer cents throughout, so "-1850000" is the same figure with
+     quotes round it. Nothing throws on it — it silently concatenates. */
+  it("reads an amount saved as a string of digits back as the cents it is", () => {
+    const b = savedBlob({ txns: [txn({ amountC: "-1850000" })], snapshots: [] });
+    const acc = bankAcc();
+    expect(accountBalance(acc, b.txns, b.snapshots)).toBe("42500000-1850000");
+
+    const st = hydrate(b);
+    expect(st.txns[0].amountC).toBe(-1850000);
+    expect(accountBalance(acc, st.txns, st.snapshots)).toBe(2400000);
+  });
+
+  /* Money in, specifically: the forecast multiplies a negative recurring
+     amount by the spend scenario on the way past and a string quietly becomes
+     a number there, so it is an income row that carries the fault through to
+     the total the screen is drawn from. */
+  it("reads a recurring amount saved as a string, which the forecast adds up", () => {
+    const rent = { id: "rec_rent", name: "Rent received", categoryId: "cat_general", amountC: "1200000", day: 1 };
+    const b = savedBlob({ recurring: [rent], txns: [] });
+    expect(typeof buildForecast(b, null).rows[0].net).toBe("string");
+
+    const st = hydrate(b);
+    expect(st.recurring[0].amountC).toBe(1200000);
+    const clean = buildForecast({ ...b, recurring: [{ ...rent, amountC: 1200000 }] }, null);
+    expect(buildForecast(st, null).rows[0].net).toBe(clean.rows[0].net);
+    expect(typeof buildForecast(st, null).rows[0].net).toBe("number");
+  });
+
+  it("reads a snapshot balance saved as a string", () => {
+    const b = savedBlob({ txns: [], snapshots: [{ id: "snap_a", accountId: "acc_invest", date: "2026-01-15", balanceC: "65200000" }] });
+    const acc = investAcc();
+    expect(typeof accountBalance(acc, b.txns, b.snapshots)).toBe("string");
+
+    const st = hydrate(b);
+    expect(st.snapshots[0].balanceC).toBe(65200000);
+    expect(accountBalance(acc, st.txns, st.snapshots)).toBe(65200000);
+  });
+
+  /* 12.34 is twelve cents or it is R12,34, which is 1234 cents. Nothing in the
+     model says which, and they differ by a factor of a hundred. */
+  it("will not guess whether 12.34 is twelve cents or twelve rand", () => {
+    const st = hydrate(savedBlob({ txns: [txn({ desc: "WOOLWORTHS CLAREMONT", amountC: 12.34 })] }));
+    expect(st.txns).toHaveLength(0);
+    expect(repairLine(st).detail).toContain("WOOLWORTHS CLAREMONT");
+    expect(repairLine(st).detail).toContain("12.34");
+    expect(st.audit[0]).toBe(repairLine(st)); // newest first, like every other audit line
+  });
+
+  it("names the row and quotes the value, so what it left out is on the screen", () => {
+    const b = savedBlob({
+      txns: [txn({ desc: "SHELL ULTRA CITY", amountC: "R1 234,56" })],
+      snapshots: [{ id: "snap_a", accountId: "acc_invest", date: null, balanceC: 100 }],
+    });
+    const line = repairLine(hydrate(b));
+    expect(line.kind).toBe("repair");
+    expect(line.id).toMatch(/^aud_/);
+    expect(line.when).toBe("2026-03-15 12:00");
+    expect(line.detail).toContain("transaction “SHELL ULTRA CITY”");
+    expect(line.detail).toContain('amountC was "R1 234,56"');
+    expect(line.detail).toContain("balance snapshot");
+    expect(line.detail).toContain("date was null");
+  });
+
+  it("drops what is not a row at all, keeps what is, and draws the page anyway", () => {
+    const b = savedBlob({ txns: [null, txn(), undefined, "nonsense", 42, []] });
+    expect(() => buildForecast(b, null)).toThrow();
+
+    const st = hydrate(b);
+    expect(st.txns).toHaveLength(1);
+    expect(st.txns[0].desc).toBe(initialState.txns[0].desc);
+    expect(repairLine(st).detail).toContain("5 rows");
+    expect(() => renderApp(b)).not.toThrow();
+  });
+
+  it("mints an id for a row that has not got one, so a delete can name it", () => {
+    const b = savedBlob({ txns: [txn({ desc: "NO ID HERE" }), txn()] });
+    delete b.txns[0].id;
+
+    const st = hydrate(b);
+    expect(st.txns[0].id).toMatch(/^txn_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(st.txns[0].desc).toBe("NO ID HERE");
+    expect(st.txns[1].id).toBe(initialState.txns[0].id);
+    expect(st.txns.filter((t) => t.id !== st.txns[0].id)).toHaveLength(1);
+  });
+
+  it("gives two id-less rows an id each, so deleting one does not take the other", () => {
+    const b = savedBlob({ txns: [txn(), txn({ desc: "THE OTHER ONE" })] });
+    delete b.txns[0].id;
+    delete b.txns[1].id;
+    // as saved, one delete by id takes both, which is the twin-delete bug again
+    expect(b.txns.filter((t) => t.id !== b.txns[0].id)).toHaveLength(0);
+
+    const st = hydrate(b);
+    expect(st.txns).toHaveLength(2);
+    st.txns.forEach((t) => expect(t.id).toMatch(/^txn_[0-9a-f-]{36}$/));
+    expect(st.txns[0].id).not.toBe(st.txns[1].id);
+    expect(st.txns.filter((t) => t.id !== st.txns[0].id)).toHaveLength(1);
+  });
+
+  it("keeps a transaction pointing at its import when the batch id was not a string", () => {
+    const b = savedBlob({
+      batches: [{ id: 7, filename: "january.csv", when: "2026-01-31 08:00", count: 1, accountIds: ["acc_bank"] }],
+      txns: [txn({ batchId: 7 })],
+    });
+    const st = hydrate(b);
+    expect(typeof st.batches[0].id).toBe("string");
+    expect(st.txns[0].batchId).toBe(st.batches[0].id);
+  });
+
+  it("changes nothing in a model whose rows are all the right type", () => {
+    const b = savedBlob();
+    const st = hydrate(b);
+    ["categories", "accounts", "recurring", "annual", "rules", "txns", "snapshots", "batches", "audit"].forEach((key) => {
+      expect(st[key], key).toEqual(b[key]);
+    });
+  });
+
+  it("writes nothing to the audit trail when there was nothing to leave out", () => {
+    expect(hydrate(savedBlob()).audit).toEqual(initialState.audit);
+  });
+
+  it("does not touch the blob it was handed while repairing it", () => {
+    const b = savedBlob({ txns: [txn({ date: 20260115 }), txn({ desc: "BAD", amountC: 12.34 }), null] });
+    b.snapshots = [{ id: "snap_a", accountId: "acc_invest", date: 20260115, balanceC: "6520000" }];
+    const before = structuredClone(b);
+    hydrate(b);
+    expect(b).toEqual(before);
+  });
+});

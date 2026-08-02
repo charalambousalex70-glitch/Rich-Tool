@@ -390,6 +390,105 @@ const OBJECT_KEYS = ["settings", "comp", "mortgage", "scenario"];
 const REMINTABLE = { recurring: "rec", annual: "ann", rules: "rule", txns: "txn", snapshots: "snap", batches: "batch", audit: "aud" };
 const ARRAY_KEYS = ["categories", "accounts", ...Object.keys(REMINTABLE)];
 
+/* The fields inside a row that a saved model is policed on, and the reading
+   each one has to survive.
+
+   Everything above this line gets the *kind* of thing at a top-level key
+   right: an object where an object belongs, an array where an array belongs.
+   None of it looks inside a row, and a row is where the next lockout came
+   from. A model carrying date: 20260115 — the same date, as a number rather
+   than a string — walks through all of it and then reaches
+   txns.filter((t) => t.date.slice(0, 7) === ym), which runs before anything is
+   drawn, on every page. "t.date.slice is not a function", behind the same
+   error screen as the absent key was.
+
+   What is on this list is decided by what the app dereferences without a
+   guard, not by what a schema would say:
+
+     date on txns and snapshots — .slice(0, 7), .localeCompare and <=, none of
+       them guarded, all of them on the first-paint path. This is the one that
+       throws.
+     amountC on txns, recurring and annual, and balanceC on snapshots — every
+       one of them is added into a running total. A string there does not
+       throw, which is worse: it turns the total into "42500000-1850000" by
+       concatenation and every figure drawn from it with it.
+     id, on the collections that already remint — a delete is
+       filter((x) => x.id !== id) and an edit is map((x) => x.id === id ? …),
+       so a row with no id cannot be deleted or edited on its own, and two of
+       them are the twin-delete bug over again.
+
+   What is deliberately not on it, and why:
+
+     accounts.openingC, and the money inside settings, comp and mortgage. They
+       are added up exactly the same way and go the same way when they are the
+       wrong type, but the only repair available for an opening balance that
+       cannot be read is to call it zero, and quietly restating someone's
+       opening balance is the kind of guess this pass exists to avoid. Left
+       alone: wrong on the screen, which is at least wrong where it shows.
+     annual.month, recurring.day, escalationPct and the rest of the numbers a
+       row carries. escalationPct: "6" really does compound at 60% a year, so
+       this is a real gap — but it is a gap with no crash behind it, and this
+       is a targeted pass rather than the beginnings of a schema validator. */
+const ROW_FIELDS = {
+  txns:      { date: "date", amountC: "cents" },
+  snapshots: { date: "date", balanceC: "cents" },
+  recurring: { amountC: "cents" },
+  annual:    { amountC: "cents" },
+};
+
+/* Two readings of a date, both of them lossless, and nothing else.
+
+   Every date in a saved model was written either by parseDateAny at import or
+   by an <input type="date">, so it left here as YYYY-MM-DD; a round trip
+   through something that treats a field of digits as a number is what loses
+   the dashes. Both of those are the same day and can be read back with no
+   guessing at all, and a timestamp is trimmed to its day because that is what
+   the app compares against (t.date <= "2026-01-15" is false for the same day
+   with a time on the end of it).
+
+   Anything else is not this app's handwriting. 01/02/2026 above all: that is
+   the 1st of February or the 2nd of January depending on a setting that
+   describes how the user's *bank* writes dates, not how their saved model
+   does, so parseDateAny is the wrong tool here however tempting its reach is.
+   Two readings a month apart is not a repair, it is a coin toss, and the row
+   is quarantined instead. */
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}/;
+const COMPACT_DAY = /^(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])$/;
+const readDate = (v) => {
+  const s = typeof v === "string" ? v.trim() : typeof v === "number" && Number.isInteger(v) ? String(v) : "";
+  if (ISO_DAY.test(s)) return s.slice(0, 10);
+  if (COMPACT_DAY.test(s)) return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+  return undefined; // no reading of this that is not a guess
+};
+
+/* Money is integer cents everywhere in this model and toC is the only thing
+   that ever writes it, so "-1850000" is that same figure with quotes round it
+   and reading it back changes nothing. Note that toC is emphatically not the
+   tool for that: it reads what a person typed into a box, so toC("1234") is
+   R1 234,00, and putting a saved figure through it would multiply it by a
+   hundred.
+
+   12.34 is the other thing entirely, and it is not repaired. Nothing here has
+   ever written a fraction of a cent — every figure goes through Math.round —
+   so a non-integer was written by something else, and it reads equally well as
+   12 cents or as R12,34, which is 1234 cents. Those differ by a factor of a
+   hundred with nothing in the model to choose between them. Rounding it would
+   put a plausible and wrong figure on the screen; the row is quarantined
+   instead, with the value quoted where the user can see it. */
+const readCents = (v) => {
+  const n = typeof v === "string" && /^[+-]?\d+$/.test(v.trim()) ? Number(v.trim()) : v;
+  return Number.isSafeInteger(n) ? n : undefined;
+};
+
+/* What a quarantined row is called in the audit line, and what of it can be
+   quoted back. A user reading "we left a row out" wants to know which one. */
+const ROW_NOUN = { txns: "transaction", snapshots: "balance snapshot", recurring: "recurring item", annual: "annual item", rules: "import rule", batches: "import", audit: "audit line", accounts: "account", categories: "category" };
+const rowName = (row) => [row.desc, row.name, row.pattern, row.filename].find((s) => typeof s === "string" && s !== "");
+const shortValue = (v) => {
+  const s = typeof v === "string" ? `"${v}"` : v && typeof v === "object" ? (Array.isArray(v) ? "a list" : "an object") : String(v);
+  return s.length > 42 ? `${s.slice(0, 41)}…` : s;
+};
+
 /* Everything loaded off the server comes through here first.
  *
  * The whole of the migration strategy used to be `boot || initialState`: the
@@ -427,11 +526,57 @@ export function hydrate(saved) {
     if (!Array.isArray(out[key])) out[key] = initialState[key].map((row) => ({ ...row }));
   }
 
+  const batchRemint = new Map(); // old batch id -> fresh one
+  const lost = []; // rows that could not be read, for the audit line at the end
+
+  /* Row by row, field by field, on the list above. Repair beats removal every
+     single time it is available: dropping a transaction because one field is
+     the wrong type moves the user's balance and nothing on the screen says it
+     happened, which is worse than the crash — a crash is at least visible. So
+     a row only goes when a policed field has no reading at all, and then it
+     goes loudly.
+
+     A row that is not an object is the one thing there is nothing to repair
+     in: null, a string or a number where a row belongs carries no field to
+     salvage, and it is what .date and .amountC are read off before the first
+     paint. */
+  for (const key of ARRAY_KEYS) {
+    const fields = ROW_FIELDS[key];
+    const prefix = REMINTABLE[key];
+    const kept = [];
+    for (const row of out[key]) {
+      if (!row || typeof row !== "object" || Array.isArray(row)) {
+        lost.push({ key, name: undefined, why: `the row itself was ${shortValue(row)}` });
+        continue;
+      }
+      let next = row; // copied only where something actually changes
+      let unreadable = null;
+      for (const field in fields) {
+        const was = row[field];
+        const now = fields[field] === "date" ? readDate(was) : readCents(was);
+        if (now === undefined) { unreadable = { key, name: rowName(row), why: `${field} was ${shortValue(was)}` }; break; }
+        if (now !== was) next = { ...next, [field]: now };
+      }
+      if (unreadable) { lost.push(unreadable); continue; }
+      /* An id has to be something a delete can name, and only this row. The
+         reference that follows an id is remapped for the same reason the
+         duplicate pass below remaps it — but only where there was an id to
+         follow, since sweeping up every transaction that has no batchId at
+         all would file the user's manually entered rows under an import. */
+      if (prefix && !(typeof next.id === "string" && next.id.trim())) {
+        const fresh = uid(prefix);
+        if (key === "batches" && next.id !== undefined && next.id !== null && next.id !== "") batchRemint.set(next.id, fresh);
+        next = { ...next, id: fresh };
+      }
+      kept.push(next);
+    }
+    out[key] = kept;
+  }
+
   /* Repairing the damage the old counter has already done to live accounts:
      rows saved in different sessions can be carrying the same id, and while
      they do, a delete takes all of them and an edit changes all of them. The
      first row to claim an id keeps it; every later claimant is reminted. */
-  const batchRemint = new Map(); // old batch id -> fresh one
   for (const [key, prefix] of Object.entries(REMINTABLE)) {
     const seen = new Set();
     out[key] = out[key].map((row) => {
@@ -451,6 +596,35 @@ export function hydrate(saved) {
      model and nothing currently reads it loudly enough to have caught this. */
   if (batchRemint.size) {
     out.txns = out.txns.map((t) => (t && batchRemint.has(t.batchId) ? { ...t, batchId: batchRemint.get(t.batchId) } : t));
+  }
+
+  /* A row that went missing without a word would be indistinguishable from a
+     row the user deleted, and it moves their balance either way, so the one
+     thing a quarantine must not be is quiet. The audit trail is where every
+     other change to the model already announces itself, and it is on the same
+     page as Export, which is what a user wanting the row back would reach for.
+     Quoting the value that could not be read means the figure is still on the
+     screen and can be typed back in — nothing here is destroyed, it is moved
+     somewhere it cannot take the app down.
+
+     A repair, by contrast, is silent: reading "1234" as 1234 cents leaves
+     every figure in the model exactly where it was, and a line about it would
+     be noise on a trail the user reads for their own changes. Only removals
+     are logged, and only where there was one.
+
+     Written in the same shape and the same timestamp format as log() in App,
+     because it lands in the same table. Reading the clock is the one thing
+     here that is not a function of the argument — as is minting an id, which
+     hydrate has done since it was written. */
+  if (lost.length) {
+    const shown = lost.slice(0, 6).map((q) => `${ROW_NOUN[q.key] || "row"}${q.name ? ` “${q.name}”` : ""} — ${q.why}`);
+    if (lost.length > shown.length) shown.push(`and ${lost.length - shown.length} more`);
+    out.audit = [{
+      id: uid("aud"),
+      when: new Date().toISOString().slice(0, 16).replace("T", " "),
+      kind: "repair",
+      detail: `Left ${lost.length} ${lost.length === 1 ? "row" : "rows"} out of the model you last saved, because ${lost.length === 1 ? "it could" : "they could"} not be read: ${shown.join("; ")}`,
+    }, ...out.audit];
   }
 
   return out;
