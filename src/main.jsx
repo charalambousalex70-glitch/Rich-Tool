@@ -202,7 +202,12 @@ function Root() {
         "overwrite each other. Run supabase/migrations/0001_add_rev.sql to fix it."
       );
     }
-    if (res.ok) { rev.current = res.rev; setSaveState("saved"); return; }
+    /* A write that landed means there is nothing left to choose between, so
+       the conflict latch comes off here as well as in the two buttons. It is
+       the latch that stops `onPersist` putting anything on the wire, and a tab
+       that leaves it on while showing "All changes saved" would be lying in
+       exactly the way this whole change exists to prevent. */
+    if (res.ok) { rev.current = res.rev; conflicted.current = false; setSaveState("saved"); return; }
     if (res.conflict) { conflicted.current = true; setSaveState("conflict"); return; }
     console.error("Save failed:", res.error);
     setSaveState("error");
@@ -277,12 +282,25 @@ function Root() {
     const s = sessionRef.current;
     if (!supabase || !s || latest.current == null) return;
     conflicted.current = false;
+    /* Everything `flush` does to keep one write on the wire at a time has to
+       happen here too. Without it, a keystroke during this round trip starts
+       the debounce again, and that save goes out alongside the force-save
+       still carrying the revision we already know is stale. It comes back a
+       conflict and sets the latch; the force-save then lands on top and says
+       "All changes saved" — leaving a tab that shows no conflict, claims to be
+       saved, and quietly writes nothing for the rest of the session. */
+    clearTimeout(timer.current);
+    inFlight.current = true;
     setSaveState("saving");
-    settle(await forceSaveUserState(supabase, {
-      userId: s.user.id,
-      state: latest.current,
-      revSupported: revSupported.current,
-    }));
+    let res;
+    try {
+      res = await forceSaveUserState(supabase, {
+        userId: s.user.id,
+        state: latest.current,
+        revSupported: revSupported.current,
+      });
+    } finally { inFlight.current = false; }
+    settle(res);
   };
 
   if (demo) return (

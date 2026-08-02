@@ -208,8 +208,20 @@ describe("isMissingRevColumn", () => {
     expect(isMissingRevColumn(MISSING_IN_CACHE)).toBe(true);
   });
 
+  /* The test above proves less than its name suggests: both fixtures carry a
+     message the backstop matches too, so deleting the code check outright left
+     the whole file green. The codes are the stable half of the contract — the
+     wording is what moves between PostgREST releases — so pin them with errors
+     the backstop cannot rescue. */
+  it("reads the codes, not just the wording that happens to come with them", () => {
+    expect(isMissingRevColumn({ code: "42703", message: "" })).toBe(true);
+    expect(isMissingRevColumn({ code: "PGRST204", message: "" })).toBe(true);
+  });
+
   it("recognises the message alone, for clients that drop the code", () => {
     expect(isMissingRevColumn({ message: 'column "rev" does not exist' })).toBe(true);
+    // Postgres words the insert path differently from the select path.
+    expect(isMissingRevColumn({ message: 'column "rev" of relation "user_state" does not exist' })).toBe(true);
   });
 
   it("does not downgrade an unrelated failure to a blind overwrite", () => {
