@@ -542,9 +542,10 @@ export const buildForecast = (state, scenario) => {
       if (amt >= 0) planIn += amt; else planOut += amt;
     });
     // bonus month
-    if (+ym.slice(5) === comp.bonusMonth) {
-      planIn += Math.round(comp.salaryMonthlyC * (1 + sc.salaryPct / 100) * 12 * (comp.bonusTargetPct / 100) / 1);
-    }
+    const bonusC = +ym.slice(5) === comp.bonusMonth
+      ? Math.round(comp.salaryMonthlyC * (1 + sc.salaryPct / 100) * 12 * (comp.bonusTargetPct / 100) / 1)
+      : 0;
+    planIn += bonusC;
     annual.forEach((a) => {
       if (+ym.slice(5) !== a.month) return;
       const yearsOut = year - +startYm.slice(0, 4);
@@ -581,6 +582,19 @@ export const buildForecast = (state, scenario) => {
       monthTxns.forEach((t) => {
         if (!modelCats.has(t.categoryId)) { if (t.amountC >= 0) blendIn += t.amountC; else blendOut += t.amountC; }
       });
+      /* The bonus is added to planIn on its own, outside the recurring sweep,
+         so rebuilding the blend from the recurring and annual items alone lost
+         it: one transaction in the bonus month and the bonus fell out of net
+         and cum, and the variance called it a shortfall the size of the bonus.
+         Add it back — but the actual wins over the plan, which is the rule the
+         rest of this leg already runs on (a paid recurring or annual item
+         contributes its actual, not its planned, amount). A bonus that has
+         landed is by then already in blendIn: cat_bonus is normally outside
+         the model, so the unmodelled sweep just above credits it, and if the
+         user does model it the recurring sweep credits it instead. Either way
+         adding the planned figure on top would pay the bonus twice, so only a
+         bonus that has not arrived yet is still forecast. */
+      if (bonusC && !monthTxns.some((t) => t.categoryId === "cat_bonus")) blendIn += bonusC;
       usedIn = blendIn; usedOut = blendOut; mode = "blend";
     }
     const net = usedIn + usedOut;

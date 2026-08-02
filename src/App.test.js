@@ -700,6 +700,7 @@ describe("buildForecast", () => {
 
   const cats = [
     { id: "cat_salary", kind: "income" },
+    { id: "cat_bonus", kind: "income" },
     { id: "c_food", kind: "expense" },
     { id: "c_ins", kind: "expense" },
     { id: "c_tr", kind: "transfer" },
@@ -897,6 +898,34 @@ describe("buildForecast", () => {
     const nov = rows.find((r) => r.ym === "2026-11");
     expect(nov.planIn).toBe(1000000);
     expect(dec.planIn).toBe(3400000); // 1000000 salary + 1000000 * 12 * 20%
+  });
+
+  /* The bonus is added to planIn on its own, outside the recurring sweep, so a
+     blend that rebuilt usedIn from the recurring and annual items alone lost
+     it: one transaction in the bonus month and the bonus fell out of net and
+     cum, and the variance called it a shortfall the size of the bonus. */
+  it("keeps the bonus in the blend when the bonus month is the current month", () => {
+    const s = baseState();
+    s.comp = { ...s.comp, bonusTargetPct: 20, bonusMonth: 3 };
+    s.txns = [{ id: "t1", date: "2026-03-05", amountC: -350000, categoryId: "c_food" }];
+    const row = buildForecast(s, null).rows[0];
+    expect(row.mode).toBe("blend");
+    expect(row.planIn).toBe(3400000);
+    expect(row.usedIn).toBe(3400000); // planned salary and planned bonus, neither of them paid yet
+    expect(row.net).toBe(3050000);    // 3400000 in, 350000 of actual food out
+    expect(row.varianceC).toBe(-50000); // the food overspend alone, not the whole bonus
+  });
+
+  it("takes the bonus that was actually paid over the bonus the plan assumed", () => {
+    const s = baseState();
+    s.comp = { ...s.comp, bonusTargetPct: 20, bonusMonth: 3 };
+    s.txns = [
+      { id: "t1", date: "2026-03-05", amountC: -350000, categoryId: "c_food" },
+      { id: "t2", date: "2026-03-10", amountC: 2000000, categoryId: "cat_bonus" },
+    ];
+    const row = buildForecast(s, null).rows[0];
+    // 1000000 planned salary + the 2000000 that landed, not that plus the 2400000 assumed
+    expect(row.usedIn).toBe(3000000);
   });
 });
 
