@@ -332,15 +332,22 @@ export const initialState = {
    any other — with nothing in it. Its arrays are its own: sharing one with
    initialState would let an edit to a reset model reach back into the seed.
 
-   Two things are deliberately not emptied, because nothing in the app can put
-   them back. No page anywhere creates an account or a category — both exist
-   only as the rows seeded here. So `accounts: []` would leave a reset user
-   looking at "this model has no accounts, so there is nowhere to record a
-   transaction" for good, and `categories: []` would empty every category
-   dropdown in the app while cat_uncat and cat_general stayed hardcoded in the
-   import and add-transaction paths. The accounts are kept with every figure
-   at zero; the category list is a taxonomy rather than the user's own data
-   and is kept whole.
+   Two things are deliberately not emptied. No page anywhere creates a
+   category — they exist only as the rows seeded here — so `categories: []`
+   would empty every category dropdown in the app while cat_uncat and
+   cat_general stayed hardcoded in the import and add-transaction paths. The
+   category list is a taxonomy rather than the user's own data and is kept
+   whole.
+
+   The accounts are kept with every figure at zero, and that is now a weaker
+   argument than it was. It was made when no page anywhere created an account,
+   so `accounts: []` left a reset user looking at "this model has no accounts,
+   so there is nowhere to record a transaction" with no way out of it. The
+   Accounts page adds, renames and deletes them now, so an empty list is a
+   first step rather than a dead end — and four accounts the user did not
+   create, under names that are not theirs, is the thing the reset was supposed
+   to clear. Changing it belongs with the reset feature and its own tests, not
+   here.
 
    Three fields hold their defaults rather than going to zero, because zero is
    not a value the rest of the code can read. The ages are bounded 18-120 by
@@ -510,6 +517,29 @@ const countOf = (n, key) => `${n} ${ROW_NOUN[key]}${n === 1 ? "" : "s"}`;
 const listOf = (found) => {
   const parts = found.map(({ key, n }) => countOf(n, key));
   return parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts[0];
+};
+
+/* What still points at an account, counted per collection, in the same words
+   the repair below uses — "3 transactions and 1 balance snapshot".
+
+   Deleting an account those rows name is refused outright, and the reason is
+   the one the account half of the repair below already ran into: there is
+   nowhere honest to send an orphan. Reassigning the rows to another account is
+   a statement about where the user's money sits that they never made, and
+   cascading the delete takes real transactions for real amounts off the books;
+   both move balances without being asked. Leaving them stranded is worse still
+   and is exactly what the repair below has to write an audit line about. So the
+   account stays, and the user is told what is holding it and what they can do
+   instead. An account nothing names deletes cleanly. */
+export const accountBlockers = (state, accountId) =>
+  ACCOUNT_REFS
+    .map((key) => ({ key, n: (state[key] || []).filter((row) => row && row.accountId === accountId).length }))
+    .filter((f) => f.n > 0);
+
+export const deleteAccountRefusal = (state, acc) => {
+  const found = accountBlockers(state, acc.id);
+  if (!found.length) return null;
+  return `“${acc.name}” cannot be deleted with ${listOf(found)} pointing at it. They would go on counting in the month's spending while sitting in no account balance and in no net worth. Nothing in this app removes a transaction or a balance snapshot, so rename this account or change its kind rather than replacing it.`;
 };
 
 /* Everything loaded off the server comes through here first.
@@ -1754,11 +1784,45 @@ function AddTxn({ state, update, ym, cats }) {
   );
 }
 
+/* The kinds of account the model knows: the id it is stored under, the word for
+   one of them, and the heading over the group of them. One list rather than two
+   because the kind is not a label — accountBalance reads investment and crypto
+   off their snapshots and everything else off its opening balance, and this
+   page draws a card only under a heading it recognises. A kind offered in the
+   picker but missing from the headings would put an account on nobody's screen
+   while still counting in net worth. */
+const ACCOUNT_TYPES = [
+  ["bank", "Bank", "Bank"],
+  ["credit", "Credit card", "Credit cards"],
+  ["investment", "Investment", "Investments"],
+  ["crypto", "Crypto", "Crypto"],
+];
+const typeWord = (t) => (ACCOUNT_TYPES.find(([id]) => id === t) || [t, t])[1];
+
+/* openingYm is on every account row, is written by everything that makes one,
+   and is read by nothing: accountBalance sums every transaction in the account
+   regardless of date. It stays that way here, and there is deliberately no
+   field for it, because the only honest meaning for it — the balance is as at
+   this month, so count transactions from then on — would drop every
+   transaction dated before it out of the balance the moment it started being
+   read. An imported statement reaching further back than the opening month
+   would quietly stop counting in net worth while going on counting in the
+   month's spending, which is the split-brain c843dd0 exists to close. New rows
+   still carry it so the shape stays whole for whoever wires it up. */
 function Accounts({ state, update, cur, goTxns, palette }) {
   const still = useReducedMotion();
   const [recon, setRecon] = useState({});
   const [snap, setSnap] = useState({});
-  const groups = [["bank", "Bank"], ["credit", "Credit cards"], ["investment", "Investments"], ["crypto", "Crypto"]];
+  /* Why a delete was refused, per account, kept until the next attempt on it. */
+  const [refused, setRefused] = useState({});
+  /* The name a rename started from. One field is focused at a time, so one ref
+     covers every card: it is read on the way out to write a single audit line
+     for the whole rename rather than one per keystroke. */
+  const renamedFrom = useRef(null);
+  const groups = ACCOUNT_TYPES.map(([type, , heading]) => [type, heading]);
+
+  const setAcc = (id, patch, detail) =>
+    update((s) => ({ ...s, accounts: s.accounts.map((a) => (a.id === id ? { ...a, ...patch } : a)) }), detail ? "edit" : undefined, detail);
 
   const history = (acc) => {
     const out = [];
@@ -1780,6 +1844,12 @@ function Accounts({ state, update, cur, goTxns, palette }) {
             const r = recon[acc.id] || {};
             const computedAt = r.date ? accountBalance(acc, state.txns, state.snapshots, r.date) : null;
             const diff = r.balance !== undefined && computedAt !== null ? toC(r.balance) - computedAt : null;
+            /* accountBalance stops reading the opening balance the moment a
+               snapshot account has a snapshot to read instead — the mark to
+               market supersedes it. So the field is closed exactly when it has
+               stopped being part of the figure, rather than sitting there
+               taking edits that change nothing. */
+            const openingLive = !(isSnap && state.snapshots.some((s) => s.accountId === acc.id));
             return (
               <Card key={acc.id} title={<span><span className="acc-type">{label}</span>{acc.name}</span>}
                 right={<button className="mini" aria-label={`View transactions for ${acc.name}`} onClick={() => goTxns({ account: acc.id })}>view txns →</button>}>
@@ -1823,11 +1893,69 @@ function Accounts({ state, update, cur, goTxns, palette }) {
                     )}
                   </div>
                 )}
+                <div className="recon">
+                  <div className="muted-s">Account details</div>
+                  <div className="recon-row">
+                    <input aria-label={`Name of the account “${acc.name}”`} value={acc.name}
+                      onFocus={(e) => { renamedFrom.current = e.target.value; }}
+                      onChange={(e) => setAcc(acc.id, { name: e.target.value })}
+                      onBlur={(e) => {
+                        const was = renamedFrom.current;
+                        renamedFrom.current = null;
+                        /* The name is already in state from the keystrokes;
+                           this writes the one audit line for the whole edit. */
+                        if (was === null || was === e.target.value) return;
+                        update((s) => s, "edit", `Renamed account "${was}" to "${e.target.value}"`);
+                      }} />
+                    {/* Changing the kind changes the balance, because the kind is
+                        what decides how the balance is worked out — an investment
+                        or crypto account is its latest snapshot plus what has
+                        been paid in since, and everything else is its opening
+                        balance plus everything. It is allowed anyway. The
+                        alternative is that an account set to the wrong kind is
+                        stuck that way for good the moment a transaction names
+                        it, because that is precisely when the delete below
+                        refuses, which is the trap this whole page exists to
+                        open. What the change costs is not hidden: the audit line
+                        names the balance before and after whenever it moves. */}
+                    <select className="cat-sel" aria-label={`Kind of account “${acc.name}” is`} value={acc.type} onChange={(e) => {
+                      const to = e.target.value;
+                      const was = accountBalance(acc, state.txns, state.snapshots);
+                      const now = accountBalance({ ...acc, type: to }, state.txns, state.snapshots);
+                      setAcc(acc.id, { type: to }, `Account "${acc.name}" is now a ${typeWord(to).toLowerCase()} account, was ${typeWord(acc.type).toLowerCase()}${now === was ? "" : ` — balance ${C(was, cur)} → ${C(now, cur)}`}`);
+                    }}>
+                      {ACCOUNT_TYPES.map(([t, word]) => <option key={t} value={t}>{word}</option>)}
+                    </select>
+                  </div>
+                  <div className="recon-row" data-off={!openingLive}>
+                    <span className="muted-s">Opening balance</span>
+                    <NumInput label={`Opening balance of “${acc.name}”`} valueC={acc.openingC} disabled={!openingLive}
+                      onCommit={(c) => setAcc(acc.id, { openingC: c }, `Account "${acc.name}" opening balance → ${C(c, cur)}`)} />
+                  </div>
+                  {!openingLive && <div className="muted-s">The opening balance is not part of this account's figure while there is a balance you have typed in — the latest one you entered replaces it.</div>}
+                  {/* Said in words, on its own line the way every other block
+                      on this card is headed. The ✕ alone, sitting against the
+                      field above it, reads as "clear the opening balance". */}
+                  <div className="muted-s">Delete this account</div>
+                  <div className="recon-row">
+                    <DeleteCell what={acc.name} onDelete={() => {
+                      const why = deleteAccountRefusal(state, acc);
+                      if (why) { setRefused({ ...refused, [acc.id]: why }); return; }
+                      setRefused({ ...refused, [acc.id]: null });
+                      update((s) => ({ ...s, accounts: s.accounts.filter((a) => a.id !== acc.id) }), "edit", `Deleted account "${acc.name}"`);
+                    }} />
+                  </div>
+                  {refused[acc.id] && <div className="recon-result bad" role="status">{refused[acc.id]}</div>}
+                </div>
               </Card>
             );
           })}
         </React.Fragment>
       ))}
+      <Card title="Add an account">
+        <p className="muted">Every transaction and every imported statement lands in one of these. A new one starts empty and at zero — give it a name, say what kind of account it is, and set the balance it opened with, on its own card above.</p>
+        <button className="btn ghost" onClick={() => update((s) => ({ ...s, accounts: [...s.accounts, { id: uid("acc"), name: "New account", type: "bank", openingC: 0, openingYm: nowYm() }] }), "edit", "Added account")}>+ Add account</button>
+      </Card>
       <Card title="Transfers between own accounts" className="span2">
         <p className="muted">Transactions marked <span className="chip transfer">transfer</span> (or categorised as a transfer-kind category, e.g. Credit Card Payment, Investment Contribution) move money between your accounts. They affect individual account balances but are excluded from income, spend, budget variance, forecasting, and the long-term plan — so paying the credit card never double-counts as an expense.</p>
       </Card>
@@ -2812,9 +2940,10 @@ function Governance({ cur }) {
         </p>
         <p className="muted">
           What it keeps is the part that surprises people: <b>your accounts and the whole category list stay</b>.
-          Nothing anywhere in this app creates an account or a category — both exist only as the rows the model starts
-          with — so clearing them would leave you with nowhere to record a transaction and an empty dropdown on every
-          page. The accounts stay under their own names with every balance at zero.
+          Nothing anywhere in this app creates a category — they exist only as the rows the model starts with — so
+          clearing them would leave an empty dropdown on every page. The accounts stay under their own names with
+          every balance at zero, so there is somewhere to record a transaction the moment the reset finishes. You can
+          rename them, change what kind of account they are, or delete the ones you do not want, on the Accounts page.
         </p>
         <p className="muted">
           Your current, retirement and planning ages are kept exactly as you have them. They are facts about you rather
@@ -3091,6 +3220,9 @@ const CSS = `
 
   .recon { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
   .recon-row { display: flex; gap: 8px; } .recon-row input { flex: 1; min-width: 0; }
+  /* A field the arithmetic has stopped reading, dimmed the way the switched-off
+     scenario panel above is — disabled on its own is only a cursor. */
+  .recon-row[data-off="true"] { opacity: .35; }
   .recon-result { font-size: 0.75rem; padding: 7px 10px; border-radius: 7px; }
   .recon-result.ok { background: var(--accent-bg); color: var(--accent); }
   .recon-result.bad { background: var(--warn-bg); color: var(--neg-text-soft); }

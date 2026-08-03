@@ -11,6 +11,7 @@ import App, {
   AGE_MIN, AGE_MAX, TERM_MONTHS_MAX,
   initialState, blankState,
   uid, hydrate, SCHEMA_VERSION,
+  accountBlockers, deleteAccountRefusal,
 } from "./App.jsx";
 
 /* Frozen "now" used by every test that touches nowYm()/todayISO(). */
@@ -597,6 +598,94 @@ describe("accountBalance", () => {
     const s = [{ accountId: "w", date: "2026-02-28", balanceC: 800000 }];
     const t = [{ accountId: "w", date: "2026-03-06", amountC: 120000 }];
     expect(accountBalance(w, t, s)).toBe(920000);
+  });
+});
+
+/* ============================================================
+   The rule that decides whether an account can be deleted.
+
+   Two plain functions over the model, so the decision can be asked without a
+   browser: what is holding the account, and what the user is told when that
+   stops the delete. The Accounts page is the only caller and it refuses on
+   anything but null.
+   ============================================================ */
+describe("accountBlockers", () => {
+  const model = {
+    accounts: [{ id: "a1", name: "Main Bank Account" }, { id: "a2", name: "Savings" }],
+    txns: [
+      { id: "t1", accountId: "a1", amountC: -1000 },
+      { id: "t2", accountId: "a1", amountC: -2000 },
+      { id: "t3", accountId: "a2", amountC: 500 },
+    ],
+    snapshots: [{ id: "s1", accountId: "a1", balanceC: 4000 }],
+  };
+
+  it("finds nothing for an account no row names", () => {
+    expect(accountBlockers(model, "a3")).toEqual([]);
+  });
+
+  it("counts transactions and snapshots separately", () => {
+    expect(accountBlockers(model, "a1")).toEqual([{ key: "txns", n: 2 }, { key: "snapshots", n: 1 }]);
+  });
+
+  it("leaves out the collections that hold nothing for it", () => {
+    expect(accountBlockers(model, "a2")).toEqual([{ key: "txns", n: 1 }]);
+  });
+
+  /* Both collections are arrays by the time the page runs, hydrate having
+     guaranteed it — but this rule is what stands between a delete and the
+     user's balances, so it does not throw on a model that arrived some other
+     way. */
+  it("reads a missing collection as nothing pointing at the account", () => {
+    expect(accountBlockers({ txns: [{ accountId: "a1" }] }, "a1")).toEqual([{ key: "txns", n: 1 }]);
+  });
+});
+
+describe("deleteAccountRefusal", () => {
+  const acc = { id: "a1", name: "Main Bank Account" };
+
+  it("allows the delete when nothing points at the account", () => {
+    expect(deleteAccountRefusal({ txns: [], snapshots: [] }, acc)).toBe(null);
+    expect(deleteAccountRefusal({ txns: [{ accountId: "other" }], snapshots: [] }, acc)).toBe(null);
+  });
+
+  it("names the account and counts everything holding it", () => {
+    const why = deleteAccountRefusal({
+      txns: [{ accountId: "a1" }, { accountId: "a1" }, { accountId: "a1" }],
+      snapshots: [{ accountId: "a1" }],
+    }, acc);
+    expect(why).toContain("“Main Bank Account”");
+    expect(why).toContain("3 transactions and 1 balance snapshot");
+  });
+
+  it("counts one of a thing in the singular", () => {
+    const why = deleteAccountRefusal({ txns: [{ accountId: "a1" }], snapshots: [] }, acc);
+    expect(why).toContain("1 transaction pointing at it");
+    expect(why).not.toContain("1 transactions");
+  });
+
+  /* A count on its own is a refusal without a reason. What the user is owed is
+     what deleting it would have cost — the split-brain c843dd0 measured — and
+     what they can do instead, which is not "move the rows", because nothing in
+     this app moves or removes a transaction. */
+  it("says what the delete would have cost and what to do instead", () => {
+    const why = deleteAccountRefusal({ txns: [{ accountId: "a1" }], snapshots: [] }, acc);
+    expect(why).toContain("no account balance");
+    expect(why).toContain("no net worth");
+    expect(why).toContain("rename");
+  });
+
+  /* All four seeded accounts carry rows — two hold the seeded transactions and
+     two hold the seeded snapshots — so the demo model cannot lose an account
+     by accident. */
+  it("refuses the delete of every account in the seeded model", () => {
+    expect(initialState.accounts.map((a) => deleteAccountRefusal(initialState, a) === null)).toEqual([false, false, false, false]);
+  });
+
+  /* The reset model keeps the same four accounts and none of the rows, so
+     every one of them can be cleared out by a user starting over. */
+  it("allows the delete of every account in the reset model", () => {
+    expect(blankState.accounts.map((a) => deleteAccountRefusal(blankState, a))).toEqual([null, null, null, null]);
   });
 });
 
