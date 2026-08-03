@@ -7,6 +7,7 @@ import {
   buildForecast, buildLongTerm, parseOFX,
   isReadableAmount, isReadableNumber, ageError, termMonthsError,
   AGE_MIN, AGE_MAX, TERM_MONTHS_MAX,
+  initialState, blankState,
 } from "./App.jsx";
 
 /* Frozen "now" used by every test that touches nowYm()/todayISO(). */
@@ -989,5 +990,125 @@ describe("parseOFX", () => {
   it("skips blocks whose date will not parse", () => {
     const ofx = "<STMTTRN><TRNAMT>1.00<NAME>NO DATE</STMTTRN>";
     expect(parseOFX(ofx)).toEqual([]);
+  });
+});
+
+/* ============================================================
+   blankState — the empty model behind Reset
+   ============================================================ */
+describe("blankState", () => {
+  freezeNow();
+
+  const EMPTIED = ["recurring", "annual", "rules", "txns", "snapshots", "batches", "audit"];
+
+  it("carries exactly the keys the seeded model carries", () => {
+    expect(Object.keys(blankState).sort()).toEqual(Object.keys(initialState).sort());
+  });
+
+  it("empties every array the user puts their own data into", () => {
+    EMPTIED.forEach((key) => {
+      expect(blankState[key], key).toEqual([]);
+    });
+  });
+
+  it("shares no array with the seeded model, so an edit to one cannot reach the other", () => {
+    Object.keys(initialState)
+      .filter((key) => Array.isArray(initialState[key]))
+      .forEach((key) => {
+        expect(blankState[key], key).not.toBe(initialState[key]);
+      });
+  });
+
+  it("keeps the accounts, because nothing in the app can create one", () => {
+    expect(blankState.accounts).toHaveLength(initialState.accounts.length);
+    expect(blankState.accounts.map((a) => a.id)).toEqual(initialState.accounts.map((a) => a.id));
+  });
+
+  it("zeroes the opening figure on every account it keeps", () => {
+    blankState.accounts.forEach((a) => {
+      expect(a.openingC, a.id).toBe(0);
+    });
+  });
+
+  it("keeps the category list whole, including the hardcoded fallbacks", () => {
+    expect(blankState.categories.map((c) => c.id)).toEqual(initialState.categories.map((c) => c.id));
+    expect(blankState.categories.some((c) => c.id === "cat_uncat")).toBe(true);
+    expect(blankState.categories.some((c) => c.id === "cat_general")).toBe(true);
+  });
+
+  it("zeroes the compensation and the mortgage", () => {
+    expect(blankState.comp.salaryMonthlyC).toBe(0);
+    expect(blankState.comp.bonusTargetPct).toBe(0);
+    expect(blankState.comp.salaryGrowthPct).toBe(0);
+    expect(blankState.mortgage.balanceC).toBe(0);
+    expect(blankState.mortgage.ratePct).toBe(0);
+    expect(blankState.mortgage.propertyValueC).toBe(0);
+    expect(blankState.mortgage.paymentOverrideC).toBe(0);
+  });
+
+  it("zeroes inflation and every return rate", () => {
+    expect(blankState.settings.inflationPct).toBe(0);
+    expect(blankState.settings.investReturnPct).toBe(0);
+    expect(blankState.settings.cashReturnPct).toBe(0);
+    expect(blankState.settings.cryptoReturnPct).toBe(0);
+  });
+
+  it("holds ages the settings form would accept", () => {
+    const st = blankState.settings;
+    expect(ageError("currentAge", st.currentAge, st)).toBeNull();
+    expect(ageError("retirementAge", st.retirementAge, st)).toBeNull();
+    expect(ageError("planningAge", st.planningAge, st)).toBeNull();
+  });
+
+  it("leaves the scenario switched off with no deltas", () => {
+    expect(blankState.scenario).toEqual({ enabled: false, salaryPct: 0, spendPct: 0, inflationDelta: 0, rateDelta: 0, returnDelta: 0 });
+  });
+
+  it("works out a mortgage payment of zero rather than dividing by a zero term", () => {
+    const m = blankState.mortgage;
+    expect(monthlyPayment(m.balanceC, m.ratePct, m.termMonths)).toBe(0);
+    expect(amortise(m, m.termMonths).rows).toEqual([]);
+  });
+
+  it("reports a zero balance for every account it holds", () => {
+    blankState.accounts.forEach((a) => {
+      expect(accountBalance(a, blankState.txns, blankState.snapshots), a.id).toBe(0);
+    });
+  });
+
+  it("forecasts twelve months of nothing without throwing", () => {
+    const { rows } = buildForecast(blankState, null);
+    expect(rows).toHaveLength(12);
+    rows.forEach((r) => {
+      expect(r.planIn).toBe(0);
+      expect(r.planOut).toBe(0);
+      expect(r.usedIn).toBe(0);
+      expect(r.usedOut).toBe(0);
+      expect(r.net).toBe(0);
+      expect(r.cum).toBe(0);
+      expect(r.mode).toBe("plan");
+    });
+  });
+
+  it("projects the long term as one row per year of zeros, without throwing", () => {
+    const st = blankState.settings;
+    const { rows } = buildLongTerm(blankState, null);
+    expect(rows).toHaveLength(st.planningAge - st.currentAge + 1);
+    rows.forEach((r) => {
+      expect(r.incomeC).toBe(0);
+      expect(r.spendC).toBe(0);
+      expect(r.netC).toBe(0);
+      expect(r.cashC).toBe(0);
+      expect(r.investC).toBe(0);
+      expect(r.cryptoC).toBe(0);
+      expect(r.mortC).toBe(0);
+      expect(r.netWorthC).toBe(0);
+    });
+  });
+
+  /* Not a fault: with nothing saved and nothing coming in, the first retired
+     year is the year the money runs out, and the Overview says so. */
+  it("reports the retirement age as the depletion age, there being nothing to live on", () => {
+    expect(buildLongTerm(blankState, null).depletionAge).toBe(blankState.settings.retirementAge);
   });
 });
