@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm test
+
+      - run: npm run build
+
+      # Says in the log whether that build is Supabase-backed or demo mode.
+      # Run without --require on purpose: missing keys are worth reading about,
+      # but they are not a reason to fail the run. CI has no Supabase variables
+      # of its own, so it will normally report demo mode — nothing deploys from
+      # here. The hard gate is `node scripts/check-env.mjs --require`, meant for
+      # a deploy pipeline.
+      - run: npm run check:env

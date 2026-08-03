@@ -152,8 +152,32 @@ export const parseDateAny = (raw, dayFirst = true) => {
   return isNaN(d) ? null : d.toISOString().slice(0, 10);
 };
 
-let _id = 1000;
-const uid = (p) => `${p}_${++_id}`;
+/* An id has to be unique against the model the user saved months ago, not
+   merely against the ids minted since this page loaded. The counter that stood
+   here started at 1000 on every load, and evaluating this module spends
+   exactly 59 of them on the seed arrays below — nothing ever reseeded it from
+   what came back off the wire. So a returning user's first new transaction was
+   txn_1060 every single time, colliding with the one last session had already
+   given away. Deletes are filter((x) => x.id !== id) and edits are
+   map((x) => x.id === id ? … : x): a collision meant deleting one row deleted
+   its twin, and editing one edited both.
+
+   The prefix stays. It is what says which table a row came from when it turns
+   up in the audit trail or in a console dump.
+
+   randomUUID is only present in a secure context, and Safari before 15.4 has
+   no such thing, so fall back to laying out the sixteen v4 bytes by hand over
+   getRandomValues — present in every browser we care about and in the test
+   environment as well. */
+const uuid4 = () => {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; // version 4
+  b[8] = (b[8] & 0x3f) | 0x80; // variant 10xx
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+};
+export const uid = (p) => `${p}_${uuid4()}`;
 
 /* ============================================================
    SEED DATA — mirrors the seven tables of the spreadsheet model
@@ -277,7 +301,15 @@ const seedSnapshots = [
   { id: uid("snap"), accountId: "acc_crypto", date: D(2),  balanceC: 3200000 },
 ];
 
+/* The shape of a saved model, stamped onto every state that goes to the
+   server so a later client can tell what it is looking at. Version 1 is the
+   shape below. Bump it only when a saved model needs work on the way in that
+   hydrate cannot work out from shape alone — filling a missing key does not
+   need a version, but reinterpreting an existing one would. */
+export const SCHEMA_VERSION = 1;
+
 export const initialState = {
+  schemaVersion: SCHEMA_VERSION,
   settings: { currency: "R", currentAge: 42, retirementAge: 65, planningAge: 90, inflationPct: 5.0, investReturnPct: 9.0, cashReturnPct: 4.0, cryptoReturnPct: 9.0, dayFirstDates: true, theme: "dark" },
   comp: { salaryMonthlyC: 8500000, bonusTargetPct: 15, bonusMonth: 12, salaryGrowthPct: 5.5 }, // Table 5
   mortgage: { balanceC: 185000000, ratePct: 10.5, termMonths: 216, fixedExpiry: ymAdd(CUR_YM, 14), paymentOverrideC: 1850000, propertyValueC: 320000000 },
@@ -319,6 +351,7 @@ export const initialState = {
    "undefined" on the screen. With the money at zero none of the three changes
    a single figure. */
 export const blankState = {
+  schemaVersion: SCHEMA_VERSION,
   settings: { currency: "R", currentAge: 42, retirementAge: 65, planningAge: 90, inflationPct: 0, investReturnPct: 0, cashReturnPct: 0, cryptoReturnPct: 0, dayFirstDates: true, theme: "dark" },
   comp: { salaryMonthlyC: 0, bonusTargetPct: 0, bonusMonth: 12, salaryGrowthPct: 0 },
   mortgage: { balanceC: 0, ratePct: 0, termMonths: 0, fixedExpiry: CUR_YM, paymentOverrideC: 0, propertyValueC: 0 },
@@ -335,6 +368,391 @@ export const blankState = {
 };
 
 /* ============================================================
+   HYDRATION — making a saved model safe to render
+   ============================================================ */
+
+/* The four keys that hold an object of settings rather than rows. They are
+   filled sub-key by sub-key: a row saved before propertyValueC or theme
+   existed still has a mortgage and still has settings, just with a hole in
+   them, and the app already patches two of those holes by hand at the point
+   of use. */
+const OBJECT_KEYS = ["settings", "comp", "mortgage", "scenario"];
+
+/* The collections whose ids may be reminted, and the prefix to mint with.
+   Nothing in the model points at a recurring, annual, rule, transaction,
+   snapshot, batch or audit row; the single inbound reference anywhere is
+   txns[].batchId -> batches[].id, which is remapped below.
+
+   accounts and categories are deliberately not in here. Their ids are seeded
+   constants rather than minted, so they never collided in the first place,
+   and txns, recurring, annual, rules and snapshots all point at them by id —
+   reminting one would cut every row that names it adrift. */
+const REMINTABLE = { recurring: "rec", annual: "ann", rules: "rule", txns: "txn", snapshots: "snap", batches: "batch", audit: "aud" };
+const ARRAY_KEYS = ["categories", "accounts", ...Object.keys(REMINTABLE)];
+
+/* The fields inside a row that a saved model is policed on, and the reading
+   each one has to survive.
+
+   Everything above this line gets the *kind* of thing at a top-level key
+   right: an object where an object belongs, an array where an array belongs.
+   None of it looks inside a row, and a row is where the next lockout came
+   from. A model carrying date: 20260115 — the same date, as a number rather
+   than a string — walks through all of it and then reaches
+   txns.filter((t) => t.date.slice(0, 7) === ym), which runs before anything is
+   drawn, on every page. "t.date.slice is not a function", behind the same
+   error screen as the absent key was.
+
+   What is on this list is decided by what the app dereferences without a
+   guard, not by what a schema would say:
+
+     date on txns and snapshots — .slice(0, 7), .localeCompare and <=, none of
+       them guarded, all of them on the first-paint path. This is the one that
+       throws.
+     amountC on txns, recurring and annual, and balanceC on snapshots — every
+       one of them is added into a running total. A string there does not
+       throw, which is worse: it turns the total into "42500000-1850000" by
+       concatenation and every figure drawn from it with it.
+     id, on the collections that already remint — a delete is
+       filter((x) => x.id !== id) and an edit is map((x) => x.id === id ? …),
+       so a row with no id cannot be deleted or edited on its own, and two of
+       them are the twin-delete bug over again.
+
+   What is deliberately not on it, and why:
+
+     accounts.openingC, and the money inside settings, comp and mortgage. They
+       are added up exactly the same way and go the same way when they are the
+       wrong type, but the only repair available for an opening balance that
+       cannot be read is to call it zero, and quietly restating someone's
+       opening balance is the kind of guess this pass exists to avoid. Left
+       alone: wrong on the screen, which is at least wrong where it shows.
+     annual.month, recurring.day, escalationPct and the rest of the numbers a
+       row carries. escalationPct: "6" really does compound at 60% a year, so
+       this is a real gap — but it is a gap with no crash behind it, and this
+       is a targeted pass rather than the beginnings of a schema validator. */
+const ROW_FIELDS = {
+  txns:      { date: "date", amountC: "cents" },
+  snapshots: { date: "date", balanceC: "cents" },
+  recurring: { amountC: "cents" },
+  annual:    { amountC: "cents" },
+};
+
+/* Two readings of a date, both of them lossless, and nothing else.
+
+   Every date in a saved model was written either by parseDateAny at import or
+   by an <input type="date">, so it left here as YYYY-MM-DD; a round trip
+   through something that treats a field of digits as a number is what loses
+   the dashes. Both of those are the same day and can be read back with no
+   guessing at all, and a timestamp is trimmed to its day because that is what
+   the app compares against (t.date <= "2026-01-15" is false for the same day
+   with a time on the end of it).
+
+   Anything else is not this app's handwriting. 01/02/2026 above all: that is
+   the 1st of February or the 2nd of January depending on a setting that
+   describes how the user's *bank* writes dates, not how their saved model
+   does, so parseDateAny is the wrong tool here however tempting its reach is.
+   Two readings a month apart is not a repair, it is a coin toss, and the row
+   is quarantined instead. */
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}/;
+const COMPACT_DAY = /^(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])$/;
+const readDate = (v) => {
+  const s = typeof v === "string" ? v.trim() : typeof v === "number" && Number.isInteger(v) ? String(v) : "";
+  if (ISO_DAY.test(s)) return s.slice(0, 10);
+  if (COMPACT_DAY.test(s)) return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+  return undefined; // no reading of this that is not a guess
+};
+
+/* Money is integer cents everywhere in this model and toC is the only thing
+   that ever writes it, so "-1850000" is that same figure with quotes round it
+   and reading it back changes nothing. Note that toC is emphatically not the
+   tool for that: it reads what a person typed into a box, so toC("1234") is
+   R1 234,00, and putting a saved figure through it would multiply it by a
+   hundred.
+
+   12.34 is the other thing entirely, and it is not repaired. Nothing here has
+   ever written a fraction of a cent — every figure goes through Math.round —
+   so a non-integer was written by something else, and it reads equally well as
+   12 cents or as R12,34, which is 1234 cents. Those differ by a factor of a
+   hundred with nothing in the model to choose between them. Rounding it would
+   put a plausible and wrong figure on the screen; the row is quarantined
+   instead, with the value quoted where the user can see it. */
+const readCents = (v) => {
+  const n = typeof v === "string" && /^[+-]?\d+$/.test(v.trim()) ? Number(v.trim()) : v;
+  return Number.isSafeInteger(n) ? n : undefined;
+};
+
+/* What a quarantined row is called in the audit line, and what of it can be
+   quoted back. A user reading "we left a row out" wants to know which one. */
+const ROW_NOUN = { txns: "transaction", snapshots: "balance snapshot", recurring: "recurring item", annual: "annual item", rules: "import rule", batches: "import", audit: "audit line", accounts: "account", categories: "category" };
+const rowName = (row) => [row.desc, row.name, row.pattern, row.filename].find((s) => typeof s === "string" && s !== "");
+const shortValue = (v) => {
+  const s = typeof v === "string" ? `"${v}"` : v && typeof v === "object" ? (Array.isArray(v) ? "a list" : "an object") : String(v);
+  return s.length > 42 ? `${s.slice(0, 41)}…` : s;
+};
+
+/* The references one row makes to another by id, and the only place a dangling
+   one can be sent.
+
+   These are the whole of it: a transaction names an account and a category,
+   recurring items, annual items and import rules name a category, and a
+   balance snapshot names an account. Nothing else in the model points at
+   anything (the one remaining reference, txns.batchId, is a row naming an
+   import and is repaired above).
+
+   None of them has ever been checked, and that has been survivable only
+   because no page anywhere can delete an account or a category — the rows on
+   the other end cannot go away. That stops being true the moment those two get
+   a create/rename/delete of their own, and every one of these turns into a
+   live hazard at the same time. */
+const CATEGORY_REFS = ["txns", "recurring", "annual", "rules"];
+const ACCOUNT_REFS = ["txns", "snapshots"];
+const UNCAT = "cat_uncat";
+const countOf = (n, key) => `${n} ${ROW_NOUN[key]}${n === 1 ? "" : "s"}`;
+const listOf = (found) => {
+  const parts = found.map(({ key, n }) => countOf(n, key));
+  return parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts[0];
+};
+
+/* Everything loaded off the server comes through here first.
+ *
+ * The whole of the migration strategy used to be `boot || initialState`: the
+ * raw JSONB went straight into state with no check on its shape. A blob
+ * missing any one top-level key threw on the first render — state.settings
+ * .currency, state.scenario.enabled, state.accounts.forEach and the six keys
+ * buildForecast destructures are all read before anything is drawn — and the
+ * ErrorBoundary that caught it offered only "Reload the page", which fetched
+ * the same blob and threw in the same place. Settings, and with it Reset, is
+ * behind App rendering at all, so there was no way back in: the user was
+ * locked out of their own data by one absent key.
+ *
+ * Pure, and exported, so all of this is testable without a browser.
+ */
+export function hydrate(saved) {
+  const base = saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+
+  /* Keys we have never heard of ride along untouched. Forward compatibility
+     here is accidental but real and worth keeping: every reducer spreads the
+     whole state and the save writes the whole thing back, so a model touched
+     by an older client must not come back with a newer client's keys quietly
+     stripped out of it. */
+  const out = { ...initialState, ...base, schemaVersion: SCHEMA_VERSION };
+
+  for (const key of OBJECT_KEYS) {
+    const v = out[key];
+    out[key] = v && typeof v === "object" && !Array.isArray(v) ? { ...initialState[key], ...v } : { ...initialState[key] };
+  }
+
+  for (const key of ARRAY_KEYS) {
+    /* null, an object or a string where an array belongs is what actually
+       reaches .forEach, .filter and .map, and one of those throws before the
+       first paint. Rows are copied out of the seed rather than shared with
+       it, so an edit to the repaired model cannot reach back into it. */
+    if (!Array.isArray(out[key])) out[key] = initialState[key].map((row) => ({ ...row }));
+  }
+
+  const batchRemint = new Map(); // old batch id -> fresh one
+  const lost = []; // rows that could not be read, for the audit line at the end
+
+  /* Row by row, field by field, on the list above. Repair beats removal every
+     single time it is available: dropping a transaction because one field is
+     the wrong type moves the user's balance and nothing on the screen says it
+     happened, which is worse than the crash — a crash is at least visible. So
+     a row only goes when a policed field has no reading at all, and then it
+     goes loudly.
+
+     A row that is not an object is the one thing there is nothing to repair
+     in: null, a string or a number where a row belongs carries no field to
+     salvage, and it is what .date and .amountC are read off before the first
+     paint. */
+  for (const key of ARRAY_KEYS) {
+    const fields = ROW_FIELDS[key];
+    const prefix = REMINTABLE[key];
+    const kept = [];
+    for (const row of out[key]) {
+      if (!row || typeof row !== "object" || Array.isArray(row)) {
+        lost.push({ key, name: undefined, why: `the row itself was ${shortValue(row)}` });
+        continue;
+      }
+      let next = row; // copied only where something actually changes
+      let unreadable = null;
+      for (const field in fields) {
+        const was = row[field];
+        const now = fields[field] === "date" ? readDate(was) : readCents(was);
+        if (now === undefined) { unreadable = { key, name: rowName(row), why: `${field} was ${shortValue(was)}` }; break; }
+        if (now !== was) next = { ...next, [field]: now };
+      }
+      if (unreadable) { lost.push(unreadable); continue; }
+      /* An id has to be something a delete can name, and only this row. The
+         reference that follows an id is remapped for the same reason the
+         duplicate pass below remaps it — but only where there was an id to
+         follow, since sweeping up every transaction that has no batchId at
+         all would file the user's manually entered rows under an import. */
+      if (prefix && !(typeof next.id === "string" && next.id.trim())) {
+        const fresh = uid(prefix);
+        if (key === "batches" && next.id !== undefined && next.id !== null && next.id !== "") batchRemint.set(next.id, fresh);
+        next = { ...next, id: fresh };
+      }
+      kept.push(next);
+    }
+    out[key] = kept;
+  }
+
+  /* Repairing the damage the old counter has already done to live accounts:
+     rows saved in different sessions can be carrying the same id, and while
+     they do, a delete takes all of them and an edit changes all of them. The
+     first row to claim an id keeps it; every later claimant is reminted. */
+  for (const [key, prefix] of Object.entries(REMINTABLE)) {
+    const seen = new Set();
+    out[key] = out[key].map((row) => {
+      const id = row && row.id;
+      if (!seen.has(id)) { seen.add(id); return row; }
+      const fresh = uid(prefix);
+      if (key === "batches") batchRemint.set(id, fresh);
+      return { ...row, id: fresh };
+    });
+  }
+
+  /* Two batches saved under one id cannot be told apart, so the transactions
+     that carry it cannot be divided between them — they follow the reminted
+     row wholesale. Either way one of the two import lines ends up describing
+     rows it did not bring in; what matters is that batchId still names a
+     batch that exists, because it is the only reference of its kind in the
+     model and nothing currently reads it loudly enough to have caught this. */
+  if (batchRemint.size) {
+    out.txns = out.txns.map((t) => (t && batchRemint.has(t.batchId) ? { ...t, batchId: batchRemint.get(t.batchId) } : t));
+  }
+
+  /* Referential integrity, on the same principle as the repair above: repair,
+     do not discard. A transaction naming a category that is not there is still
+     a real transaction for a real amount, and dropping it would move the
+     user's balances — so it is sent somewhere visible instead.
+
+     Somewhere visible is cat_uncat. It is the category the app already treats
+     as "we do not know": AddTxn opens on it, applyRules falls back to it for
+     every unmatched import, and blankState keeps it through a reset. Relying
+     on it, though, means guaranteeing it, which nothing did — a model without
+     it turns both of those hardcoded fallbacks into fresh dangling references
+     of their own — so it is put back when it is missing. That is the one row
+     this pass ever creates, and it is the app's own constant rather than a
+     guess: same id, same name, same kind as the seed.
+
+     All four category references move together, and that is load-bearing
+     rather than tidiness. Moving only the transactions leaves the recurring
+     item that used to match them stranded on the dead id, and the forecast
+     then pays its planned amount *and* sweeps the same transactions back in as
+     unplanned spending: a month of R11 000 of food reads as R22 000. Measured,
+     and pinned by a test.
+
+     Two things this deliberately does not do:
+
+     A category's kind dies with the category, so a transfer whose category was
+     deleted counted as spending before this pass and counts as spending after
+     it — cat_uncat is an expense, exactly as an absent category already was to
+     isFlow. Nothing left in the model remembers it was a transfer. What
+     changes is that the row now names something the user can see and re-point
+     rather than a dead id behind a dropdown that renders blank.
+
+     And collapsing two dead categories onto cat_uncat puts two recurring items
+     on one category, which matchRecurring double counts — but it double counts
+     that way today for two live items sharing a live category, so this is an
+     existing coarseness being reached rather than a new fault. The place to
+     stop it is the delete that made the reference dangle: a category with rows
+     pointing at it should not be deletable without saying where they go. */
+  const liveCats = new Set();
+  for (const c of out.categories) if (typeof c.id === "string" && c.id) liveCats.add(c.id);
+  if (!liveCats.has(UNCAT)) {
+    out.categories = [...out.categories, { ...initialState.categories.find((c) => c.id === UNCAT) }];
+    liveCats.add(UNCAT);
+  }
+  const moved = [];
+  for (const key of CATEGORY_REFS) {
+    const n = out[key].filter((row) => !liveCats.has(row.categoryId)).length;
+    if (!n) continue;
+    out[key] = out[key].map((row) => (liveCats.has(row.categoryId) ? row : { ...row, categoryId: UNCAT }));
+    moved.push({ key, n });
+  }
+
+  /* The account half is not repaired, and that is a decision rather than an
+     omission. There is no uncategorised account to move a transaction to, and
+     every candidate for one is a statement about where the user's money
+     actually sits: the first account in the list is a guess, and inventing an
+     "Unassigned" account puts a row on the Accounts page that the user never
+     opened and that every balance and net-worth figure then has to explain.
+     Both are worse than the gap, because a wrong answer about which account
+     holds R2 500 reads exactly like a right one.
+
+     So the rows stay where they are and the user is told. What they are being
+     told is worth spelling out: accountBalance filters by accountId, so an
+     orphaned transaction is in no account's balance and therefore in no net
+     worth, while still counting in the month's income and spending and in the
+     forecast — the two halves of the app disagree with each other and neither
+     says why. An orphaned snapshot is quieter, being read only through the
+     same filter, and shows up as a mark to market that no longer marks
+     anything. Naming both is the whole of the fix available here. */
+  const liveAccs = new Set();
+  for (const a of out.accounts) if (typeof a.id === "string" && a.id) liveAccs.add(a.id);
+  const stranded = [];
+  for (const key of ACCOUNT_REFS) {
+    const n = out[key].filter((row) => !liveAccs.has(row.accountId)).length;
+    if (n) stranded.push({ key, n });
+  }
+
+  /* One line, in the trail every other change to the model already writes to,
+     with the same kind as the row repair below it because it is the same kind
+     of event: the model was not what it said it was and hydrate acted.
+
+     Written at most once for any given wording, which the quarantine below
+     does not need to be. A quarantined row is gone, so the finding cannot
+     recur; an orphaned account reference is still there on the next load, and
+     the freshly hydrated state is deliberately not saved, so an unconditional
+     line would add a row to the audit trail on every page load for as long as
+     the orphan sits there — and the user would be paying for it in their own
+     saved model the next time they edited anything. */
+  if (moved.length || stranded.length) {
+    const parts = [];
+    if (moved.length) parts.push(`Moved ${listOf(moved)} to Uncategorised, because the category named is not in this model any more. No amount has changed: a category that is not there was already counted as spending rather than as a transfer, and this only puts it where you can see it and set it right.`);
+    if (stranded.length) {
+      const one = stranded.length === 1 && stranded[0].n === 1;
+      parts.push(`${listOf(stranded)} ${one ? "names" : "name"} an account that is not in this model any more. ${one ? "It has" : "They have"} been left exactly as ${one ? "it is" : "they are"}, because nothing here knows which account the money sits in — but a transaction filed this way still counts in the month's income and spending while counting in no account balance and in no net worth.`);
+    }
+    const detail = parts.join(" ");
+    if (!out.audit.some((a) => a.kind === "repair" && a.detail === detail)) {
+      out.audit = [{ id: uid("aud"), when: new Date().toISOString().slice(0, 16).replace("T", " "), kind: "repair", detail }, ...out.audit];
+    }
+  }
+
+  /* A row that went missing without a word would be indistinguishable from a
+     row the user deleted, and it moves their balance either way, so the one
+     thing a quarantine must not be is quiet. The audit trail is where every
+     other change to the model already announces itself, and it is on the same
+     page as Export, which is what a user wanting the row back would reach for.
+     Quoting the value that could not be read means the figure is still on the
+     screen and can be typed back in — nothing here is destroyed, it is moved
+     somewhere it cannot take the app down.
+
+     A repair, by contrast, is silent: reading "1234" as 1234 cents leaves
+     every figure in the model exactly where it was, and a line about it would
+     be noise on a trail the user reads for their own changes. Only removals
+     are logged, and only where there was one.
+
+     Written in the same shape and the same timestamp format as log() in App,
+     because it lands in the same table. Reading the clock is the one thing
+     here that is not a function of the argument — as is minting an id, which
+     hydrate has done since it was written. */
+  if (lost.length) {
+    const shown = lost.slice(0, 6).map((q) => `${ROW_NOUN[q.key] || "row"}${q.name ? ` “${q.name}”` : ""} — ${q.why}`);
+    if (lost.length > shown.length) shown.push(`and ${lost.length - shown.length} more`);
+    out.audit = [{
+      id: uid("aud"),
+      when: new Date().toISOString().slice(0, 16).replace("T", " "),
+      kind: "repair",
+      detail: `Left ${lost.length} ${lost.length === 1 ? "row" : "rows"} out of the model you last saved, because ${lost.length === 1 ? "it could" : "they could"} not be read: ${shown.join("; ")}`,
+    }, ...out.audit];
+  }
+
+  return out;
+}
+
+/* ============================================================
    ENGINES — pure functions over the data model
    ============================================================ */
 export const isFlow = (t, cats) => {
@@ -343,14 +761,41 @@ export const isFlow = (t, cats) => {
   return !c || c.kind !== "transfer";
 };
 
+/* An investment or crypto account is worth its latest snapshot on or before
+   the date, plus anything paid into it since. Both halves are needed and
+   neither alone will do.
+
+   Summing the transactions on their own — the way a bank account is read —
+   would throw away every gain and loss the user ever recorded, because a
+   portfolio moves with the market and not only with what is paid in. That is
+   what the snapshots are for: one is a mark to market that supersedes
+   everything before it, opening balance and contributions alike.
+
+   Reading the snapshot on its own was the other half of the mistake, and it
+   lost money outright. A transfer to the portfolio has two legs; the bank leg
+   is read, so the money left, and the portfolio leg was not, so it arrived
+   nowhere. The seeded model does exactly this every month, and net worth fell
+   by the amount saved each time. Contributions dated after the last snapshot
+   have not been marked to market yet, so they sit on top of it.
+
+   On the snapshot's own date counts as inside it: the snapshot is the balance
+   the broker reports for that day, so the day's payments are already in the
+   figure and adding them would count them twice. That is also what makes the
+   Accounts page's snapshot control behave — typing in today's real balance
+   after a month of contributions replaces them rather than stacking on them.
+
+   With no snapshot at all nothing has been marked to market, so there is
+   nothing for the contributions to sit on and the account is read exactly like
+   any other: opening balance plus every transaction. */
 export const accountBalance = (acc, txns, snapshots, uptoDate) => {
+  let openC = acc.openingC;
+  let sinceDate = null; // date of the mark to market the transactions build on, if any
   if (acc.type === "investment" || acc.type === "crypto") {
     const snaps = snapshots.filter((s) => s.accountId === acc.id && (!uptoDate || s.date <= uptoDate)).sort((a, b) => a.date.localeCompare(b.date));
-    if (snaps.length) return snaps[snaps.length - 1].balanceC;
-    return acc.openingC;
+    if (snaps.length) { openC = snaps[snaps.length - 1].balanceC; sinceDate = snaps[snaps.length - 1].date; }
   }
-  const sum = txns.filter((t) => t.accountId === acc.id && !t.excluded && (!uptoDate || t.date <= uptoDate)).reduce((s, t) => s + t.amountC, 0);
-  return acc.openingC + sum;
+  const sum = txns.filter((t) => t.accountId === acc.id && !t.excluded && (!uptoDate || t.date <= uptoDate) && (sinceDate === null || t.date > sinceDate)).reduce((s, t) => s + t.amountC, 0);
+  return openC + sum;
 };
 
 export const monthlyPayment = (balanceC, ratePct, termMonths) => {
@@ -420,9 +865,10 @@ export const buildForecast = (state, scenario) => {
       if (amt >= 0) planIn += amt; else planOut += amt;
     });
     // bonus month
-    if (+ym.slice(5) === comp.bonusMonth) {
-      planIn += Math.round(comp.salaryMonthlyC * (1 + sc.salaryPct / 100) * 12 * (comp.bonusTargetPct / 100) / 1);
-    }
+    const bonusC = +ym.slice(5) === comp.bonusMonth
+      ? Math.round(comp.salaryMonthlyC * (1 + sc.salaryPct / 100) * 12 * (comp.bonusTargetPct / 100) / 1)
+      : 0;
+    planIn += bonusC;
     annual.forEach((a) => {
       if (+ym.slice(5) !== a.month) return;
       const yearsOut = year - +startYm.slice(0, 4);
@@ -459,6 +905,19 @@ export const buildForecast = (state, scenario) => {
       monthTxns.forEach((t) => {
         if (!modelCats.has(t.categoryId)) { if (t.amountC >= 0) blendIn += t.amountC; else blendOut += t.amountC; }
       });
+      /* The bonus is added to planIn on its own, outside the recurring sweep,
+         so rebuilding the blend from the recurring and annual items alone lost
+         it: one transaction in the bonus month and the bonus fell out of net
+         and cum, and the variance called it a shortfall the size of the bonus.
+         Add it back — but the actual wins over the plan, which is the rule the
+         rest of this leg already runs on (a paid recurring or annual item
+         contributes its actual, not its planned, amount). A bonus that has
+         landed is by then already in blendIn: cat_bonus is normally outside
+         the model, so the unmodelled sweep just above credits it, and if the
+         user does model it the recurring sweep credits it instead. Either way
+         adding the planned figure on top would pay the bonus twice, so only a
+         bonus that has not arrived yet is still forecast. */
+      if (bonusC && !monthTxns.some((t) => t.categoryId === "cat_bonus")) blendIn += bonusC;
       usedIn = blendIn; usedOut = blendOut; mode = "blend";
     }
     const net = usedIn + usedOut;
@@ -503,13 +962,34 @@ export const buildLongTerm = (state, scenario) => {
   const rows = [];
   const years = st.planningAge - st.currentAge;
   let depletionAge = null;
+  /* Depletion means money that was there and then ran out, so it takes assets
+     to have been positive at some point first — either in the balances we
+     start from or in a year the projection reaches before the shortfall.
+     Without that a freshly reset model, where every figure is zero and every
+     projected year is therefore zero, would report the retirement age as the
+     year the assets were exhausted and put a red warning on a plan that has
+     nothing in it yet. Someone with nothing who is never projected to have
+     anything has a different problem from someone whose money runs out at 71,
+     and this page is only about the second. */
+  let hadLiquid = cash + invest + crypto > 0;
   const y0 = +nowYm().slice(0, 4);
+  /* A row is a position, not a period: its balances are what is held at that
+     age and its income and spend are the year that follows, which is why the
+     net on one row is the difference between its cash and the next row's. So
+     the first row is today — the balances the projection starts from, with no
+     year of growth, spending or mortgage payments applied — and the last is
+     the planning age itself. The row was pushed at the foot of this loop
+     before, which put a year of compounding into the row labelled "now" and
+     another beyond the planning age at the far end: a 48-year plan drawn as
+     49 years of growth, and a chart captioned as starting from today's
+     balances that in fact opened a year out. */
   for (let i = 0; i <= years; i++) {
     const age = st.currentAge + i;
     const retired = age >= st.retirementAge;
     const income = retired ? 0 : Math.round(salaryAnnual * (1 + bonusPct));
-    // mortgage amortisation (annual, approximate monthly compounding)
+    // mortgage amortisation over the year ahead (annual, approximate monthly compounding)
     let mortPaid = 0;
+    let mortNext = mortBal;
     if (mortBal > 0) {
       let b = mortBal;
       for (let m = 0; m < 12 && b > 0; m++) {
@@ -518,11 +998,21 @@ export const buildLongTerm = (state, scenario) => {
         b = Math.max(0, b + int_ - pay);
         mortPaid += pay;
       }
-      mortBal = b;
+      mortNext = b;
     }
     const spend = recurringSpendAnnual + annualSpend + mortPaid;
     const net = income - spend;
-    // apply growth to balances, then absorb surplus/shortfall
+    const liquid = cash + invest + crypto;
+    const assets = liquid + propVal;
+    const netWorth = assets - mortBal;
+    if (depletionAge === null && retired && hadLiquid && liquid <= 0) depletionAge = age;
+    if (liquid > 0) hadLiquid = true;
+    rows.push({ year: y0 + i, age, retired, incomeC: income, spendC: spend, netC: net,
+      cashC: cash, investC: invest, cryptoC: crypto, propertyC: propVal, mortC: mortBal, assetsC: assets, liquidC: liquid, netWorthC: netWorth });
+    if (i === years) break; // the planning age is the end of the plan, not another year of it
+    // roll on a year: the mortgage payments just made, growth on the balances,
+    // then the surplus or shortfall, then next year's figures
+    mortBal = mortNext;
     cash = Math.round(cash * (1 + cashRet)) + net;
     invest = Math.round(invest * (1 + ret));
     crypto = Math.round(crypto * (1 + cryptoRet));
@@ -532,13 +1022,6 @@ export const buildLongTerm = (state, scenario) => {
       invest -= fromInvest; cash += fromInvest;
       if (cash < 0) { const fromCrypto = Math.min(crypto, -cash); crypto -= fromCrypto; cash += fromCrypto; }
     }
-    const liquid = cash + invest + crypto;
-    const assets = liquid + propVal;
-    const netWorth = assets - mortBal;
-    if (depletionAge === null && retired && liquid <= 0) depletionAge = age;
-    rows.push({ year: y0 + i, age, retired, incomeC: income, spendC: spend, netC: net,
-      cashC: cash, investC: invest, cryptoC: crypto, propertyC: propVal, mortC: mortBal, assetsC: assets, liquidC: liquid, netWorthC: netWorth });
-    // escalate for next year
     if (!retired) salaryAnnual = Math.round(salaryAnnual * (1 + comp.salaryGrowthPct / 100));
     recurringSpendAnnual = Math.round(recurringSpendAnnual * (1 + infl));
     annualSpend = Math.round(annualSpend * (1 + infl));
@@ -573,7 +1056,10 @@ export const parseOFX = (text) => {
 };
 
 export default function App({ boot = null, onPersist = null }) {
-  const [state, setState] = useState(boot || initialState);
+  /* A saved model is repaired on the way in; the seeded one is whole already
+     and needs none of it. Lazily, because useState evaluates its argument on
+     every render and only the first one counts. */
+  const [state, setState] = useState(() => (boot ? hydrate(boot) : initialState));
   const booted = useRef(false);
   useEffect(() => {
     if (!booted.current) { booted.current = true; return; } // don't save the freshly-loaded state
@@ -1084,7 +1570,7 @@ function Overview({ state, cur, ym, netWorth, monthSpend, monthIncome, budgetOut
           help={"The running total of the next 12 monthly nets from the Forecast page. It is how much better or worse off the year leaves you — not a balance, and not what you will have in the bank."} />
         <Stat label="Retirement depletion" value={lt.depletionAge ? `age ${lt.depletionAge}` : "clear"}
           sub={lt.depletionAge ? "assets exhausted" : `retired years only, to age ${state.settings.planningAge}`} tone={lt.depletionAge ? "warn" : "pos"}
-          help={`This only looks at the retired years. It reports the first year, at or after your retirement age of ${state.settings.retirementAge}, in which your cash, investments and crypto together fall to zero. It does not check the years before you retire — so "clear" does not mean you cannot run short while still working. Your property is not counted either, because you would have to sell it to spend it.`} />
+          help={`This only looks at the retired years. It reports the first year, at or after your retirement age of ${state.settings.retirementAge}, in which your cash, investments and crypto together fall to zero, having been above zero at some point first — a model with nothing in it has nothing to run out, so it stays clear. It does not check the years before you retire — so "clear" does not mean you cannot run short while still working. Your property is not counted either, because you would have to sell it to spend it.`} />
       </div>
 
       <Card title="12-month cashflow ribbon" className="span2"
@@ -1311,7 +1797,7 @@ function Accounts({ state, update, cur, goTxns, palette }) {
                 {isSnap ? (
                   <div className="recon">
                     <div className="muted-s">Enter the balance yourself</div>
-                    <div className="muted-s">This account's balance is whatever you last typed in here — it does not move on its own between updates.</div>
+                    <div className="muted-s">This account's balance is the last figure you typed in here, plus anything paid into the account since that date. It does not grow on its own between updates.</div>
                     <div className="recon-row">
                       <input type="date" aria-label={`Date of the balance you are entering for ${acc.name}`} value={(snap[acc.id] || {}).date || todayISO()} onChange={(e) => setSnap({ ...snap, [acc.id]: { ...(snap[acc.id] || {}), date: e.target.value } })} />
                       <input aria-label={`Balance of ${acc.name} on that date`} placeholder="Balance" value={(snap[acc.id] || {}).balance || ""} onChange={(e) => setSnap({ ...snap, [acc.id]: { ...(snap[acc.id] || {}), balance: e.target.value } })} />
@@ -2255,11 +2741,13 @@ function Governance({ cur }) {
           labelled “planned”, because nothing has happened in it yet.
         </p>
         <p className="muted">
-          The Long-Term Plan is one row a year, from your current age to your planning age. Salary stops at your
-          retirement age. Spending is your recurring items twelve times over, plus your annual ones, plus whatever the
-          mortgage costs that year, and it grows by inflation every year. Balances grow at the return rates in
-          Settings, and each year's surplus or shortfall lands in cash — when cash runs negative it draws down
-          investments first, then crypto.
+          The Long-Term Plan is one row a year, from your current age to your planning age. The first row is where you
+          stand today — the balances you actually hold, with nothing projected onto them yet — and the income and spend
+          beside them are the year that follows, which is why a row's net is the difference between its cash and the
+          next row's. Salary stops at your retirement age. Spending is your recurring items twelve times over, plus
+          your annual ones, plus whatever the mortgage costs that year, and it grows by inflation every year. Balances
+          grow at the return rates in Settings, and each year's surplus or shortfall lands in cash — when cash runs
+          negative it draws down investments first, then crypto.
         </p>
         <p className="muted">
           “Depletion” is the first year, at or after your retirement age, in which cash, investments and crypto

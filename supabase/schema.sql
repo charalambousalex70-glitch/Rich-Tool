@@ -6,9 +6,15 @@
 -- already structured as relational tables internally; migrating to fully
 -- normalised Postgres tables later is a contained change.
 
+-- `rev` is what stops two tabs flattening each other. The client saves with
+-- `where user_id = ... and rev = <the revision it read>`, bumping it; a tab
+-- holding a stale revision changes no rows and is told so instead of silently
+-- overwriting the newer version. This file is the end state — a database that
+-- already exists gets the column from supabase/migrations/0001_add_rev.sql.
 create table if not exists public.user_state (
   user_id    uuid primary key references auth.users (id) on delete cascade,
   state      jsonb not null,
+  rev        bigint not null default 0,
   updated_at timestamptz not null default now()
 );
 
